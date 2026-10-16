@@ -34,7 +34,7 @@ SNI_LIST=(
   www.sony.com dl.google.com pypi.org
 )
 
-NODE_VARS=(N_ID N_PROTO N_LPORT N_PPORT N_HOST N_DOMAIN N_SNI N_UUID N_PASS N_FLOW
+NODE_VARS=(N_ID N_PROTO N_LPORT N_PPORT N_HOST N_DOMAIN N_SNI N_UUID N_PASS N_FLOW N_MUX
            N_PRIV N_PBK N_SID N_WSPATH N_CERTMODE N_CERT N_KEY N_INSECURE N_ACMEV
            N_OBFS N_NOTE N_CREATED)
 
@@ -95,7 +95,7 @@ save_conf() {
 #---------------------------------------------------------------------
 # 节点元数据
 #---------------------------------------------------------------------
-meta_reset() { local v; for v in "${NODE_VARS[@]}"; do printf -v "$v" '%s' ''; done; }
+meta_reset() { local v; for v in "${NODE_VARS[@]}"; do printf -v "$v" '%s' ''; done; N_MUX=0; }
 meta_load() { local f="$META_DIR/$1.env"; [[ $1 =~ ^[0-9]+$ && -f $f ]] || return 1; meta_reset; . "$f"; }
 meta_save() {
   local v f="$META_DIR/$N_ID.env"
@@ -883,23 +883,74 @@ tls_server_json() { # alpn(可空)
   fi
 }
 
+#---------------------------------------------------------------------
+# 多路复用（sing-mux；仅 VLESS）
+#---------------------------------------------------------------------
+multiplex_supported() { [[ $N_PROTO == reality || $N_PROTO == ws ]]; }
+
+validate_multiplex() {
+  case ${N_MUX:-0} in
+    0) return 0 ;;
+    1) multiplex_supported || { err "此协议不支持脚本的 multiplex 设置"; return 1; }
+       [[ -z $N_FLOW ]] || { err "multiplex 与 Reality Flow 不能同时开启"; return 1; } ;;
+    *) err "无效的 multiplex 设置"; return 1 ;;
+  esac
+}
+
+node_multiplex_json() { # inbound / outbound -> 可合并到节点的 JSON 字段
+  validate_multiplex || return 1
+  if [[ ${N_MUX:-0} != 1 ]]; then echo '{}'; return 0; fi
+  case $1 in
+    inbound) echo '{"multiplex":{"enabled":true,"padding":true}}' ;;
+    outbound) echo '{"multiplex":{"enabled":true,"protocol":"h2mux","max_connections":4,"min_streams":4,"padding":true}}' ;;
+    *) return 1 ;;
+  esac
+}
+
+toggle_multiplex() {
+  multiplex_supported || { warn "multiplex 仅支持 VLESS+Reality / VLESS+WS+TLS"; return 1; }
+  if [[ ${N_MUX:-0} == 1 ]]; then
+    N_MUX=0; info "multiplex 已关闭，客户端也需关闭 multiplex/smux"
+  else
+    if [[ -n $N_FLOW ]]; then
+      confirm "开启 multiplex 需要关闭 Reality Flow，是否继续?" n || return 1
+    fi
+    N_FLOW=""; N_MUX=1
+    info "multiplex 已开启（客户端需启用多路复用及 padding，关闭 Flow）"
+  fi
+}
+
+toggle_reality_flow() {
+  [[ $N_PROTO == reality ]] || { warn "仅 Reality 支持 Flow"; return 1; }
+  if [[ -n $N_FLOW ]]; then
+    N_FLOW=""; info "Flow 已关闭"
+  else
+    if [[ ${N_MUX:-0} == 1 ]]; then
+      confirm "开启 Flow 需要关闭 multiplex，是否继续?" n || return 1
+    fi
+    N_MUX=0; N_FLOW=xtls-rprx-vision
+    info "Flow 已开启，客户端需同步开启 Flow 并关闭 multiplex/smux"
+  fi
+}
+
 write_node_conf() {
-  local tag="${N_PROTO}-${N_ID}" listen tls f tmp
+  local tag="${N_PROTO}-${N_ID}" listen tls f tmp mux
+  mux=$(node_multiplex_json inbound) || return 1
   listen=$(listen_addr); f=$(conf_file); tmp=$(mktemp)
   case $N_PROTO in
     reality)
       jq -n --arg tag "$tag" --arg listen "$listen" --argjson port "$N_LPORT" --arg uuid "$N_UUID" \
-        --arg flow "$N_FLOW" --arg sni "$N_SNI" --arg priv "$N_PRIV" --arg sid "$N_SID" '
+        --arg flow "$N_FLOW" --arg sni "$N_SNI" --arg priv "$N_PRIV" --arg sid "$N_SID" --argjson mux "$mux" '
         {inbounds:[{type:"vless",tag:$tag,listen:$listen,listen_port:$port,
           users:[{uuid:$uuid} + (if $flow!="" then {flow:$flow} else {} end)],
           tls:{enabled:true,server_name:$sni,
-               reality:{enabled:true,handshake:{server:$sni,server_port:443},private_key:$priv,short_id:[$sid]}}}]}' > "$tmp" ;;
+               reality:{enabled:true,handshake:{server:$sni,server_port:443},private_key:$priv,short_id:[$sid]}}} + $mux]}' > "$tmp" ;;
     ws)
       tls=$(tls_server_json "")
       jq -n --arg tag "$tag" --arg listen "$listen" --argjson port "$N_LPORT" --arg uuid "$N_UUID" \
-        --arg path "$N_WSPATH" --argjson tls "$tls" '
+        --arg path "$N_WSPATH" --argjson tls "$tls" --argjson mux "$mux" '
         {inbounds:[{type:"vless",tag:$tag,listen:$listen,listen_port:$port,users:[{uuid:$uuid}],
-          tls:$tls,transport:{type:"ws",path:$path}}]}' > "$tmp" ;;
+          tls:$tls,transport:{type:"ws",path:$path}} + $mux]}' > "$tmp" ;;
     hy2)
       tls=$(tls_server_json "h3")
       jq -n --arg tag "$tag" --arg listen "$listen" --argjson port "$N_LPORT" --arg pw "$N_PASS" \
@@ -918,7 +969,7 @@ write_node_conf() {
         --argjson tls "$tls" '
         {inbounds:[{type:"anytls",tag:$tag,listen:$listen,listen_port:$port,users:[{password:$pw}],tls:$tls}]}' > "$tmp" ;;
     *) rm -f "$tmp"; return 1 ;;
-  esac
+  esac || { rm -f "$tmp"; return 1; }
   mv -f "$tmp" "$f"; chmod 600 "$f"
 }
 
@@ -954,22 +1005,23 @@ node_link() {
 }
 
 node_outbound() {
-  local tag="${N_NOTE:-$N_PROTO-$N_ID}" ins=false
+  local tag="${N_NOTE:-$N_PROTO-$N_ID}" ins=false mux
+  mux=$(node_multiplex_json outbound) || return 1
   [[ $N_INSECURE == 1 ]] && ins=true
   case $N_PROTO in
     reality)
       jq -n --arg tag "$tag" --arg server "$N_HOST" --argjson port "$N_PPORT" --arg uuid "$N_UUID" \
-        --arg flow "$N_FLOW" --arg sni "$N_SNI" --arg pbk "$N_PBK" --arg sid "$N_SID" '
+        --arg flow "$N_FLOW" --arg sni "$N_SNI" --arg pbk "$N_PBK" --arg sid "$N_SID" --argjson mux "$mux" '
         {type:"vless",tag:$tag,server:$server,server_port:$port,uuid:$uuid,
          tls:{enabled:true,server_name:$sni,utls:{enabled:true,fingerprint:"chrome"},
-              reality:{enabled:true,public_key:$pbk,short_id:$sid}}}
+              reality:{enabled:true,public_key:$pbk,short_id:$sid}}} + $mux
         | if $flow!="" then .flow=$flow else . end' ;;
     ws)
       jq -n --arg tag "$tag" --arg server "$N_HOST" --argjson port "$N_PPORT" --arg uuid "$N_UUID" \
-        --arg d "$N_DOMAIN" --arg path "$N_WSPATH" --argjson ins "$ins" '
+        --arg d "$N_DOMAIN" --arg path "$N_WSPATH" --argjson ins "$ins" --argjson mux "$mux" '
         {type:"vless",tag:$tag,server:$server,server_port:$port,uuid:$uuid,
          tls:{enabled:true,server_name:$d,insecure:$ins,utls:{enabled:true,fingerprint:"chrome"}},
-         transport:{type:"ws",path:$path,headers:{Host:$d}}}' ;;
+         transport:{type:"ws",path:$path,headers:{Host:$d}}} + $mux' ;;
     hy2)
       jq -n --arg tag "$tag" --arg server "$N_HOST" --argjson port "$N_PPORT" --arg pw "$N_PASS" \
         --arg d "$N_DOMAIN" --arg obfs "$N_OBFS" --argjson ins "$ins" '
@@ -990,6 +1042,21 @@ node_outbound() {
   esac
 }
 
+node_mihomo_smux() { # 添加到 mihomo 的单个节点内，与 server / port 同级
+  validate_multiplex || return 1
+  multiplex_supported || return 1
+  if [[ ${N_MUX:-0} != 1 ]]; then printf 'smux:\n  enabled: false\n'; return 0; fi
+  cat <<'EOF'
+smux:
+  enabled: true
+  protocol: h2mux
+  max-connections: 4
+  min-streams: 4
+  only-tcp: true
+  padding: true
+EOF
+}
+
 show_node() {
   local link
   meta_load "$1" || { err "节点 $1 不存在"; return 1; }
@@ -998,6 +1065,14 @@ show_node() {
   echo "地址: $N_HOST    对外端口: $N_PPORT    监听端口: $N_LPORT"
   [[ -n $N_DOMAIN ]] && echo "域名/SNI: $N_DOMAIN"
   [[ $N_PROTO == reality ]] && echo "SNI: $N_SNI    Flow: ${N_FLOW:-关闭}"
+  if multiplex_supported; then
+    if [[ ${N_MUX:-0} == 1 ]]; then
+      echo "Multiplex: 开启（h2mux，padding 开启）"
+      echo "分享链接/二维码不携带 multiplex 设置，导入后需同步下方客户端配置。"
+    else
+      echo "Multiplex: 关闭（客户端 multiplex/smux 也应关闭）"
+    fi
+  fi
   [[ $N_INSECURE == 1 ]] && echo "${YELLOW}自签证书：客户端需开启 insecure${PLAIN}"
   echo "--------------------------------------------------"
   link=$(node_link)
@@ -1005,12 +1080,22 @@ show_node() {
   command -v qrencode >/dev/null && { echo; qrencode -t ANSIUTF8 "$link"; }
   echo "--------------------------------------------------"
   echo "sing-box 客户端 outbound:"; node_outbound
+  if multiplex_supported; then
+    echo "--------------------------------------------------"
+    echo "mihomo 配置片段（放入对应节点内，与 server / port 同级）:"
+    node_mihomo_smux
+    [[ ${N_MUX:-0} != 1 ]] || echo "客户端不要设置 flow: xtls-rprx-vision。"
+  fi
   echo "=================================================="
 }
 
 write_nodes_txt() {
   local id
-  { for id in $(list_ids); do meta_load "$id" && { echo "# [$id] $(proto_label) $N_NOTE"; node_link; echo; }; done; } > "$SB_DIR/nodes.txt"
+  { for id in $(list_ids); do meta_load "$id" && {
+    echo "# [$id] $(proto_label) $N_NOTE"
+    [[ ${N_MUX:-0} != 1 ]] || echo "# multiplex 已开启：链接不携带此设置，请运行 sb info $id 获取客户端配置（需 padding，关闭 Flow）。"
+    node_link; echo
+  }; done; } > "$SB_DIR/nodes.txt"
   chmod 600 "$SB_DIR/nodes.txt"
 }
 
@@ -1124,6 +1209,11 @@ add_node() {
         [[ $cdn != *" $N_PPORT "* ]] && info "提示: 若要经 Cloudflare CDN，对外端口需为 443/2053/2083/2087/2096/8443"
       fi ;;
   esac
+  if multiplex_supported && [[ -z $N_FLOW ]]; then
+    if confirm "启用 multiplex 多路复用？（客户端需支持 sing-mux 并启用 padding）" n; then
+      toggle_multiplex || return 1
+    fi
+  fi
   [[ $(proto_net) == udp ]] && info "提示: $(proto_label) 使用 UDP，NAT 机器请确认商家已映射 UDP 端口"
 
   N_HOST=$(ask "客户端连接地址（IP 或域名）" "$def_host")
@@ -1157,6 +1247,7 @@ edit_node() {
   echo "  5) 客户端连接地址"
   echo "  6) 备注"
   echo "  7) Hysteria2 混淆开关"
+  echo "  8) Multiplex 多路复用开关（VLESS）"
   c=$(ask "请选择")
   snapshot
   case $c in
@@ -1164,8 +1255,7 @@ edit_node() {
        N_PPORT=$(ask_pub_port "$N_PPORT") ;;
     2) if [[ $N_PROTO == reality ]]; then pick_sni || return 1; N_SNI=$PICKED
        else cert_flow || return 1; fi ;;
-    3) [[ $N_PROTO == reality ]] || { warn "仅 Reality 支持"; return 1; }
-       if [[ -n $N_FLOW ]]; then N_FLOW=""; info "Flow 已关闭"; else N_FLOW=xtls-rprx-vision; info "Flow 已开启"; fi ;;
+    3) toggle_reality_flow || return 1 ;;
     4) case $N_PROTO in
          reality) N_UUID=$(gen_uuid); N_SID=$(openssl rand -hex 8)
                   keys=$("$SB_BIN" generate reality-keypair) || return 1
@@ -1178,6 +1268,7 @@ edit_node() {
     6) N_NOTE=$(ask "备注" "$N_NOTE") ;;
     7) [[ $N_PROTO == hy2 ]] || { warn "仅 Hysteria2 支持"; return 1; }
        if [[ -n $N_OBFS ]]; then N_OBFS=""; info "混淆已关闭"; else N_OBFS=$(rand_str 16); info "混淆已开启"; fi ;;
+    8) toggle_multiplex || return 1 ;;
     *) err "无效选择"; return 1 ;;
   esac
   meta_save

@@ -7,6 +7,7 @@
 - **支持协议**：VLESS+Reality、VLESS+WS+TLS、Hysteria2、TUIC v5、AnyTLS
 - **端口**：自定义，默认在 20000-60000 随机；监听端口与对外端口分开设置，适配 NAT 小鸡
 - **Reality**：Flow（`xtls-rprx-vision`）可选开启或关闭；SNI 支持多轮并发测速优选，展示平均握手耗时与成功率，按排名选择或手动输入，并检测 TLS 1.3、h2 和证书有效性
+- **多路复用**：VLESS+Reality / VLESS+WS+TLS 可开启 multiplex，自动生成服务端和 sing-box 客户端配置，并显示 mihomo `smux` 配置片段；与 Reality Flow 互斥
 - **证书**：
   - DNS-01 自动申请（acme.sh，内置 Cloudflare / 阿里云 / DNSPod，也可填写其他 acme.sh DNS 插件），无需 80/443 端口，适合 NAT 机器
   - sing-box 内置 ACME（HTTP-01 / TLS-ALPN-01，需要公网 80 或 443）
@@ -56,7 +57,7 @@ curl -fsSL -o /usr/local/bin/sb ${GH_PROXY}https://raw.githubusercontent.com/Jon
 | `sb add` | 新增节点 |
 | `sb list` | 列出所有节点和监听状态 |
 | `sb info [编号]` | 查看分享链接、二维码、客户端 outbound JSON |
-| `sb edit [编号]` | 修改端口、SNI/证书、Flow、UUID/密码、连接地址、备注等 |
+| `sb edit [编号]` | 修改端口、SNI/证书、Flow、multiplex、UUID/密码、连接地址、备注等 |
 | `sb del [编号]` | 删除节点（同时关闭防火墙端口，可选清理证书） |
 | `sb status` | 服务状态、内核版本、节点监听、证书到期时间 |
 | `sb log [-f]` | 查看日志，`-f` 实时跟踪 |
@@ -97,6 +98,30 @@ curl -fsSL -o /usr/local/bin/sb ${GH_PROXY}https://raw.githubusercontent.com/Jon
 - 输入 `r` 重新测试、`m` 手动选择/输入、`0` 取消。手动域名检测失败时，只有明确确认后才会使用。
 
 测速从运行脚本的服务器发起，包含域名解析和连接开销，仅反映当时服务器到目标站点的表现，不代表客户端连接节点的延迟或下载速度。目标站返回 HTTP 403/404 不影响检测，因为测试只建立 TLS 连接。优选需要 `timeout` 和毫秒计时支持（Bash 5 或支持 `%3N` 的 `date`）；缺少 `timeout` 时安装流程会尝试安装 `coreutils`。
+
+### Multiplex 多路复用
+
+支持 VLESS+Reality 和 VLESS+WS+TLS。新增节点时可选择开启（Reality 需先不启用 Flow）；已有节点执行 `sb edit [编号]`，选择 `8` 切换。旧节点默认关闭，新节点默认也不启用。Hysteria2、TUIC 和 AnyTLS 不使用这里的 sing-mux 开关。
+
+开启 multiplex 与开启 Reality Flow 会互相冲突，切换时脚本会询问是否关闭另一项；拒绝则保留原配置。更改仍经过快照、内核校验和服务重启，失败自动回滚。
+
+启用后，服务端配置 `multiplex.enabled: true` 和 `padding: true`；`sb info [编号]` 输出的 sing-box outbound 自动包含匹配的 multiplex 设置。客户端采用 `h2mux`、最多 4 条底层连接、`min_streams: 4`，并开启 padding，不启用 TCP Brutal。字段含义见 [sing-box multiplex 文档](https://sing-box.sagernet.org/configuration/shared/multiplex/)。
+
+mihomo 用户将 `sb info` 显示的以下片段放入对应节点内，与 `server`、`port` 同级，并删除节点的 `flow: xtls-rprx-vision`：
+
+```yaml
+smux:
+  enabled: true
+  protocol: h2mux
+  max-connections: 4
+  min-streams: 4
+  only-tcp: true
+  padding: true
+```
+
+`only-tcp: true` 表示 mihomo 只对 TCP 流量使用复用，UDP 使用节点原有传输方式。不要再同时设置非零的 `max-streams`。参考 [mihomo 配置说明](https://wiki.metacubex.one/en/config/proxies/#smux)。
+
+**分享链接和二维码不携带 multiplex 设置**，导入后需手动配置客户端，或直接使用输出的 sing-box outbound。关闭服务端 multiplex 后，客户端也需关闭对应的 multiplex/smux；切换到 Flow 时还需同步设置客户端 Flow。
 
 ### 证书申请凭据
 
