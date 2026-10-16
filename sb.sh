@@ -23,8 +23,10 @@ SB_BIN="${SB_BIN:-/usr/local/bin/sing-box}"
 SB_CMD="${SB_CMD:-/usr/local/bin/sb}"
 SB_WORKDIR="/var/lib/sing-box"
 SB_SERVICE="sing-box"
+SB_LOCK="${SB_LOCK:-/tmp/sb.lock}"
 ACME_HOME="${ACME_HOME:-/root/.acme.sh}"
 ACME_SH="$ACME_HOME/acme.sh"
+ACME_SERVER="https://acme-v02.api.letsencrypt.org/directory"
 
 SNI_LIST=(
   www.microsoft.com www.apple.com addons.mozilla.org www.amazon.com
@@ -501,19 +503,112 @@ install_acme() {
   ask_acme_email
   curl -fsSL https://get.acme.sh | sh -s ${ACME_EMAIL:+email="$ACME_EMAIL"} >/dev/null 2>&1
   [[ -x $ACME_SH ]] || { err "acme.sh 安装失败，请检查网络"; return 1; }
-  "$ACME_SH" --set-default-ca --server letsencrypt >/dev/null 2>&1
+  "$ACME_SH" --set-default-ca --server "$ACME_SERVER" >/dev/null 2>&1 || {
+    err "设置 ACME 默认 CA 失败"; return 1;
+  }
+}
+
+
+acme_directory_check() {
+  local response
+  info "检查 ACME CA 连接..."
+  if ! response=$(curl -fsS --connect-timeout 10 --max-time 20 "$ACME_SERVER" 2>/dev/null); then
+    err "无法连接 ACME CA，请检查服务器网络、DNS、系统时间和 TLS 信任；此步骤与 DNS Token 无关"
+    return 1
+  fi
+  if ! jq -e 'all(.newNonce, .newAccount, .newOrder; type == "string" and startswith("https://"))' \
+       >/dev/null 2>&1 <<< "$response"; then
+    err "ACME CA 返回了无效目录，请检查 CA 地址或网络代理；尚未开始 DNS 验证"
+    return 1
+  fi
+}
+
+# Keep the token out of curl argv and never print API response bodies.
+cf_api_get() {
+  local raw
+  if ! raw=$(printf 'header = "Authorization: Bearer %s"\n' "$CF_Token" |
+      curl -sS --config - --connect-timeout 10 --max-time 20 \
+        --write-out '\n%{http_code}' "https://api.cloudflare.com/client/v4/$1" 2>/dev/null); then
+    err "无法连接 Cloudflare API，请检查网络、DNS 和 TLS；尚不能判断 Token 是否有效"
+    return 1
+  fi
+  CF_HTTP=${raw##*$'\n'}
+  CF_RESPONSE=${raw%$'\n'*}
+  if [[ $CF_HTTP == 429 || $CF_HTTP == 5* ]]; then
+    err "Cloudflare API 暂时不可用或限流（HTTP $CF_HTTP），请稍后重试"
+    return 1
+  fi
+  jq -e 'type == "object" and (.success | type == "boolean")' \
+    >/dev/null 2>&1 <<< "$CF_RESPONSE" || { err "Cloudflare API 返回了无效响应"; return 1; }
+}
+cf_api_ok() { [[ $CF_HTTP == 200 ]] && jq -e '.success == true' >/dev/null <<< "$CF_RESPONSE"; }
+
+cf_preflight() {
+  local domain zone id account query status
+  [[ ${CF_Token:-} =~ ^[A-Za-z0-9._-]+$ ]] || { err "CF_Token 不能为空，且不能包含空白或引号"; return 1; }
+  [[ -z ${CF_Account_ID:-} || $CF_Account_ID =~ ^[a-fA-F0-9]{32}$ ]] || { err "CF_Account_ID 应为 32 位十六进制账户 ID"; return 1; }
+  # Do not reuse a zone from a previous node or acme.sh's saved account config.
+  unset CF_Zone_ID
+  info "验证 Cloudflare API Token..."
+  cf_api_get user/tokens/verify || return 1
+  if ! cf_api_ok && [[ -n ${CF_Account_ID:-} ]]; then
+    cf_api_get "accounts/$CF_Account_ID/tokens/verify" || return 1
+  fi
+  if ! cf_api_ok; then
+    err "Cloudflare Token 验证失败（HTTP $CF_HTTP）：请检查 Token、有效期和来源 IP 限制；账户级 Token 还需填写 Account ID"
+    return 1
+  fi
+  status=$(jq -r '.result.status // empty' <<< "$CF_RESPONSE")
+  [[ $status == active ]] || { err "Cloudflare Token 未处于 active 状态（可能已禁用或过期）"; return 1; }
+  domain=${N_DOMAIN#\*.}; domain=${domain%.}
+  domain=$(printf '%s' "$domain" | tr '[:upper:]' '[:lower:]')
+  zone=$domain
+  while [[ $zone == *.* ]]; do
+    query="zones?name=$(urlenc "$zone")"
+    [[ -z ${CF_Account_ID:-} ]] || query+="&account.id=$CF_Account_ID"
+    cf_api_get "$query" || return 1
+    cf_api_ok || { err "Token 有效，但无法查询 Zone，请检查 Zone-Zone-Read 权限及账户范围（HTTP $CF_HTTP）"; return 1; }
+    jq -e '.result | type == "array"' >/dev/null <<< "$CF_RESPONSE" || { err "Cloudflare Zone 响应格式异常"; return 1; }
+    id=$(jq -r --arg zone "$zone" '.result[] | select(.name == $zone) | .id' <<< "$CF_RESPONSE")
+    if [[ -n $id ]]; then
+      [[ $id =~ ^[a-fA-F0-9]{32}$ ]] || { err "Cloudflare Zone ID 异常或匹配不唯一"; return 1; }
+      account=$(jq -r --arg id "$id" '.result[] | select(.id == $id) | .account.id // empty' <<< "$CF_RESPONSE")
+      [[ $account =~ ^[a-fA-F0-9]{32}$ && ( -z ${CF_Account_ID:-} || $account == "$CF_Account_ID" ) ]] || { err "Cloudflare Zone 所属账户与 Account ID 不匹配"; return 1; }
+      export CF_Zone_ID=$id CF_Account_ID=$account
+      info "Token 有效，已确认目标 Zone: $zone"
+      info "预检查未修改 DNS；DNS 编辑权限将在 acme.sh 创建验证记录时校验（需 Zone-DNS-Edit）"
+      return 0
+    fi
+    zone=${zone#*.}
+  done
+  err "Token 有效，但无法访问 $domain 对应的 Zone；请检查域名托管、Token 资源范围和 Account ID"
+  return 1
+}
+
+acme_issue_error() {
+  local log=$1
+  if grep -Eqi 'Cannot init API|Can not init API|Unable to init API' "$log"; then
+    err "ACME CA 初始化失败，请检查 CA 连接及 acme.sh 配置；这不表示 DNS Token 无效"
+  elif grep -Eqi 'invalid domain|Error adding [Tt][Xx][Tt]|Add txt record error|Error add txt|authentication error|invalid access token|unauthorized|forbidden' "$log"; then
+    err "证书申请被拒绝或 DNS 验证记录操作失败，请按上方日志检查授权、域名托管和 DNS 编辑权限"
+  else
+    err "证书申请失败，请根据上方 acme.sh 日志检查 CA、DNS 验证、网络或限流原因"
+  fi
 }
 
 cert_dns() {
-  local c dns name val plugin d="$CERT_DIR/$N_DOMAIN" rc
+  local c dns name val plugin d="$CERT_DIR/$N_DOMAIN" rc log
   install_acme || return 1
+  acme_directory_check || return 1
   echo "DNS 服务商:  1) Cloudflare   2) 阿里云   3) DNSPod   4) 其他（acme.sh 插件）"
   c=$(ask "请选择" 1)
   case $c in
     1) dns=dns_cf
        info "Cloudflare 推荐使用 API Token（权限: Zone-DNS-Edit + Zone-Zone-Read）"
        export CF_Token; CF_Token=$(ask_secret "CF_Token")
-       val=$(ask "CF_Account_ID（可留空）"); [[ -n $val ]] && export CF_Account_ID=$val ;;
+       val=$(ask "CF_Account_ID（用户 Token 可留空，账户级 Token 必填）")
+       export CF_Account_ID=$val
+       cf_preflight || return 1 ;;
     2) dns=dns_ali
        export Ali_Key; Ali_Key=$(ask "Ali_Key (AccessKey ID)")
        export Ali_Secret; Ali_Secret=$(ask_secret "Ali_Secret") ;;
@@ -533,12 +628,18 @@ cert_dns() {
     *) err "无效选择"; return 1 ;;
   esac
   info "正在申请证书（DNS 验证通常需要 1-2 分钟）..."
-  "$ACME_SH" --issue --dns "$dns" -d "$N_DOMAIN" --keylength ec-256
-  rc=$?
-  if ((rc != 0 && rc != 2)); then err "证书申请失败，请检查 DNS 凭据和域名解析托管"; return 1; fi
+  log=$(mktemp) || return 1
+  "$ACME_SH" --issue --server "$ACME_SERVER" --dns "$dns" -d "$N_DOMAIN" --keylength ec-256 2>&1 | tee "$log"
+  rc=${PIPESTATUS[0]}
+  if ((rc != 0 && rc != 2)); then
+    acme_issue_error "$log"; rm -f "$log"; return 1
+  fi
+  rm -f "$log"
   mkdir -p "$d"
   "$ACME_SH" --install-cert -d "$N_DOMAIN" --ecc \
-    --fullchain-file "$d/fullchain.pem" --key-file "$d/key.pem" --reloadcmd "$(reload_cmd)" >/dev/null 2>&1
+    --fullchain-file "$d/fullchain.pem" --key-file "$d/key.pem" --reloadcmd "$(reload_cmd)" >/dev/null 2>&1 || {
+      err "证书已签发，但安装证书文件失败，请检查 acme.sh 配置和目录权限"; return 1;
+    }
   [[ -s $d/fullchain.pem && -s $d/key.pem ]] || { err "证书安装失败"; return 1; }
   chmod 600 "$d/key.pem"
   N_CERTMODE=dns; N_CERT=$d/fullchain.pem; N_KEY=$d/key.pem; N_INSECURE=0
@@ -1147,16 +1248,108 @@ main_menu() {
   done
 }
 
+
+# fdinfo identifies the open file description holding the lock, including locks
+# inherited by children. Merely opening the same file does not make a holder.
+lock_pid_holds() {
+  local pid=$1
+  [[ $pid =~ ^[0-9]+$ && $pid != $$ && $pid != "$BASHPID" ]] || return 1
+  [[ /proc/$pid/fd/9 -ef $SB_LOCK ]] || return 1
+  grep -Eq '^lock:.* FLOCK +ADVISORY +WRITE ' "/proc/$pid/fdinfo/9" 2>/dev/null
+}
+lock_holders() {
+  local entry pid
+  for entry in /proc/[0-9]*/fd/9; do
+    pid=${entry#/proc/}; pid=${pid%%/*}
+    lock_pid_holds "$pid" && printf '%s\n' "$pid"
+  done
+  return 0
+}
+lock_start_time() {
+  local stat
+  IFS= read -r stat < "/proc/$1/stat" || return 1
+  # comm may contain spaces and parentheses; starttime is field 22.
+  stat=${stat##*) }
+  awk '{print $20}' <<< "$stat"
+}
+lock_is_manager() {
+  local pid=$1 exe arg first=yes script=""
+  exe=$(readlink "/proc/$pid/exe") || return 1
+  [[ ${exe##*/} == bash ]] || return 1
+  while IFS= read -r -d '' arg; do
+    if [[ $first == yes ]]; then first=no; continue; fi
+    case $arg in
+      -c|-*c*) return 1 ;;
+      -*) continue ;;
+      *) script=$arg; break ;;
+    esac
+  done < "/proc/$pid/cmdline"
+  [[ -n $script ]] || return 1
+  [[ $script == /* ]] || script="/proc/$pid/cwd/$script"
+  [[ $script == "$SB_CMD" || $script -ef $SB_CMD || $script -ef ${BASH_SOURCE[0]} ]]
+}
+lock_show_process() {
+  local pid=$1 arg
+  printf 'PID: %s\n' "$pid" >&2
+  # BusyBox ps may not support these columns; /proc still supplies the command.
+  ps -p "$pid" -o pid,ppid,user,etime,args >&2 2>/dev/null && return 0
+  printf '命令: ' >&2
+  while IFS= read -r -d '' arg; do printf '%q ' "$arg" >&2; done < "/proc/$pid/cmdline"
+  printf '\n' >&2
+}
+lock_interactive() { [[ -t 0 ]]; }
+acquire_lock() {
+  command -v flock >/dev/null || return 0
+  exec 9>>"$SB_LOCK" || { err "无法打开锁文件: $SB_LOCK"; return 1; }
+  flock -n 9 && return 0
+  local pid start current
+  local managers=() starts=()
+  warn "已有另一个 sb 实例正在运行，占用进程信息:"
+  while IFS= read -r pid; do
+    lock_show_process "$pid"
+    start=$(lock_start_time "$pid" 2>/dev/null) || continue
+    if [[ -n $start ]] && lock_is_manager "$pid" 2>/dev/null; then
+      managers+=("$pid"); starts+=("$start")
+    fi
+  done < <(lock_holders)
+  # The previous process may have exited while we were inspecting it.
+  flock -n 9 && return 0
+  if ((${#managers[@]} != 1)); then
+    err "无法唯一确认持锁的 sb 管理进程，请根据进程信息手动处理后重试"
+    return 1
+  fi
+  pid=${managers[0]}; start=${starts[0]}
+  lock_interactive || { err "非交互运行不会终止其他实例，请在终端运行 sb 处理"; return 1; }
+  warn "终止管理进程可能中断其正在执行的操作"
+  confirm "是否终止 sb 进程 $pid 并继续?" n || return 1
+  flock -n 9 && return 0
+  current=$(lock_start_time "$pid" 2>/dev/null) || current=""
+  if [[ $current != "$start" ]] || ! lock_pid_holds "$pid" || ! lock_is_manager "$pid"; then
+    err "占用进程已变化，未发送终止信号，请重试"
+    return 1
+  fi
+  if ! kill -TERM "$pid"; then
+    flock -n 9 && return 0
+    err "无法终止进程 $pid，请检查权限后重试"
+    return 1
+  fi
+  if flock -w 5 9; then
+    info "已取得运行锁，继续启动"
+    return 0
+  fi
+  err "终止请求已发送，但锁尚未释放（进程可能正在执行命令，或子进程继承了锁）"
+  while IFS= read -r pid; do lock_show_process "$pid"; done < <(lock_holders)
+  err "请等待操作结束或手动处理上述进程后重试；不要删除锁文件"
+  return 1
+}
+
 main() {
   case ${1:-} in
     -h|--help|help) usage; return 0 ;;
     -v|--version|version) echo "sb v$SB_VERSION"; return 0 ;;
   esac
   [[ $EUID -eq 0 ]] || die "请使用 root 用户运行"
-  if command -v flock >/dev/null; then
-    exec 9>/tmp/sb.lock
-    flock -n 9 || die "已有另一个 sb 实例正在运行"
-  fi
+  acquire_lock || return 1
   bootstrap
   case ${1:-} in
     "") need_core && write_service; main_menu ;;

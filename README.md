@@ -86,6 +86,10 @@ curl -fsSL -o /usr/local/bin/sb ${GH_PROXY}https://raw.githubusercontent.com/Jon
 
 ### 证书申请凭据
 
+DNS-01 申请前会检查 Let's Encrypt 的 ACME 目录连接，申请时显式指定完整 CA URL，避免 CA 别名或旧默认配置异常。CA 初始化失败、Cloudflare API 连接/授权失败和 DNS 记录操作失败会分别提示。
+
+选择 Cloudflare 时，会先验证 Token 处于 `active` 状态，再逐级查找域名所属 Zone，确认 Token 可以读取该 Zone。支持用户级 Token；账户级 Token 需要填写 `CF_Account_ID`。预检查只读取 API，不修改 DNS，也不代表已确认 DNS 编辑权限；创建验证 TXT 记录仍需 `Zone-DNS-Edit`，查询 Zone 需 `Zone-Zone-Read`。验证失败会停止申请，Token 不会出现在预检查日志或 curl 命令参数中。其他 DNS 服务商仍由 acme.sh 插件校验凭据。
+
 使用 DNS-01 时，acme.sh 会把 DNS API 凭据保存在 `~/.acme.sh/account.conf` 中用于自动续期，请妥善保管服务器权限。续期成功后会自动重启 sing-box。
 
 ## 文件位置
@@ -102,6 +106,11 @@ curl -fsSL -o /usr/local/bin/sb ${GH_PROXY}https://raw.githubusercontent.com/Jon
 | `/etc/sing-box/sb.conf` | 脚本设置 |
 
 ## 常见问题
+
+**提示另一个 sb 实例正在运行？**
+脚本会显示持锁进程的 PID、命令，以及系统支持时的父进程、用户和运行时长。在交互终端中，确认目标是唯一的 sb 管理进程后，可以选择终止它并继续，默认不终止。终止前会再次验证进程身份，发送 TERM 后最多等待 5 秒，取得锁才继续启动。
+
+终止管理进程可能中断正在执行的操作。非交互调用、无法确认进程身份或锁仍被子进程占用时，会退出并提示手动处理；不会强制杀死进程、停止 sing-box 服务或删除锁文件。
 
 **内核提示 `cannot execute: required file not found`？**
 文件存在时，这通常表示内核所需的动态加载器缺失，例如在 Alpine/musl 系统上使用了不匹配的构建。v1.0.1 起会识别 musl、尝试兼容构建，并在替换旧内核前实际执行 `version` 验证；失败会保留原内核并返回错误。
