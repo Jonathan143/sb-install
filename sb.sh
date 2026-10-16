@@ -9,7 +9,7 @@
 #       sb help       查看全部子命令
 #=====================================================================
 
-SB_VERSION="1.0.2"
+SB_VERSION="1.0.3"
 SCRIPT_URL="${SCRIPT_URL:-}"          # 脚本托管直链，用于 sb update 和管道安装
 GH_PROXY="${GH_PROXY:-}"              # GitHub 下载加速前缀，例如 https://ghfast.top/
 
