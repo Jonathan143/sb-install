@@ -103,6 +103,11 @@ curl -fsSL -o /usr/local/bin/sb ${GH_PROXY}https://raw.githubusercontent.com/Jon
 
 ## 常见问题
 
+**内核提示 `cannot execute: required file not found`？**
+文件存在时，这通常表示内核所需的动态加载器缺失，例如在 Alpine/musl 系统上使用了不匹配的构建。v1.0.1 起会识别 musl、尝试兼容构建，并在替换旧内核前实际执行 `version` 验证；失败会保留原内核并返回错误。
+
+先将服务器上的 `sb` 更新为修复后的脚本，再运行 `sb`，检测到不可用内核后确认重新安装即可。也可使用 `sb core` 手动安装。仅更新内核、继续使用旧脚本不会获得这些检测和保护。
+
 **客户端导入链接失败？**
 `anytls://` 和 `tuic://` 的 URI 格式在各客户端之间并不完全统一。导入失败时，请使用 `sb info` 输出的 sing-box outbound JSON。
 
@@ -125,6 +130,43 @@ sb uninstall
 ```
 
 可以选择是否保留 `/etc/sing-box` 下的配置和证书，以及是否同时卸载 acme.sh。
+
+## 版本发布（维护者）
+
+版本号统一维护在 `sb.sh` 的 `SB_VERSION` 中，Git 标签格式为 `vX.Y.Z`。在 `main` 分支提交好全部修改后运行：
+
+```bash
+bash scripts/release.sh
+```
+
+脚本提供补丁版本、次版本、主版本、自定义版本，以及「发布当前版本」选项。例如当前是 `1.0.1` 时，分别可选择 `1.0.2`、`1.1.0`、`2.0.0`；首次发布现有修复可选择「发布当前版本」。目前仅支持 `X.Y.Z` 稳定版本。
+
+发布前会同步远程标签、检查分支和版本、运行测试。确认后自动修改 `SB_VERSION`（如果需要）、提交版本变更、创建附注标签，并原子推送 `main` 和标签到 `origin`。本地已有但尚未推送的提交也会一并推送，确认前会显示列表。需要本地 Git 已配置提交身份，并拥有仓库推送权限。
+
+- `.github/workflows/ci.yml`：在 `main` 推送或 Pull Request 时检查 Bash 语法和回归测试。
+- `.github/workflows/release.yml`：推送 `v*` 标签时，验证标签与脚本版本一致、提交属于 `main`，测试通过后创建 GitHub Release，上传 `sb.sh` 和 `SHA256SUMS`。
+- `.github/release.yml`：按 PR 标签归类自动生成的发布说明；直接提交的变更可通过完整变更链接查看。
+
+仓库需启用 GitHub Actions；发布任务使用内置 `GITHUB_TOKEN` 的 `contents: write` 权限，无需额外配置 PAT。若组织策略或分支保护禁止推送/发布，需要按仓库规则处理。首次发布前需将上述工作流和脚本一并提交。
+
+推送失败时，脚本保留本地提交和标签，并输出重试命令；不要直接重复创建同一版本。若推送成功但 Actions 失败，修复环境问题后可在 Actions 页面重新运行失败任务。已成功发布的同名 Release 不会被覆盖；代码修正应发布新版本。
+
+本地检查命令：
+
+```bash
+bash scripts/check.sh
+```
+
+### 从 Release 安装
+
+首次 Release 成功后，可以使用最新稳定版地址安装，后续 `sb update` 也会使用此地址：
+
+```bash
+SCRIPT_URL=https://github.com/Jonathan143/sb-install/releases/latest/download/sb.sh
+curl -fsSL "$SCRIPT_URL" -o /usr/local/bin/sb && chmod +x /usr/local/bin/sb && SCRIPT_URL="$SCRIPT_URL" sb
+```
+
+固定版本可使用 `https://github.com/Jonathan143/sb-install/releases/download/v1.0.1/sb.sh`（替换为实际已发布版本）；固定版本地址不会自动跟随最新版。原先的 `main` 安装地址仍可使用，获取的是分支上的代码。
 
 ## 免责声明
 

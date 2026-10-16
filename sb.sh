@@ -9,7 +9,7 @@
 #       sb help       查看全部子命令
 #=====================================================================
 
-SB_VERSION="1.0.0"
+SB_VERSION="1.0.1"
 SCRIPT_URL="${SCRIPT_URL:-}"          # 脚本托管直链，用于 sb update 和管道安装
 GH_PROXY="${GH_PROXY:-}"              # GitHub 下载加速前缀，例如 https://ghfast.top/
 
@@ -163,29 +163,69 @@ svc() {
 #---------------------------------------------------------------------
 # sing-box 内核
 #---------------------------------------------------------------------
-core_version() { [[ -x $SB_BIN ]] && "$SB_BIN" version 2>/dev/null | awk 'NR==1{print $3}'; }
+core_version() {
+  local output version
+  [[ -x $SB_BIN ]] || return 1
+  output=$("$SB_BIN" version 2>/dev/null) || return 1
+  version=$(awk 'NR==1 && $1=="sing-box" && $2=="version" {print $3}' <<<"$output")
+  [[ -n $version ]] || return 1
+  printf '%s\n' "$version"
+}
+
+uses_musl() {
+  [[ -f /etc/alpine-release ]] && return 0
+  local output
+  output=$(ldd --version 2>&1) # musl 的 ldd --version 可能返回非零
+  [[ $output == *musl* ]]
+}
 latest_version() {
   curl -fsSL --max-time 15 "https://api.github.com/repos/SagerNet/sing-box/releases/latest" 2>/dev/null \
     | jq -r '.tag_name // empty' | sed 's/^v//'
 }
 install_core() {
-  local ver=${1:-} arch tmp url
-  arch=$(get_arch)
+  local ver=${1:-} arch tmp url variant candidate output staged
+  local variants=("" "-musl")
+  arch=$(get_arch) || return 1
+  uses_musl && variants=("-musl" "")
   [[ -z $ver ]] && ver=$(latest_version)
   [[ -z $ver ]] && ver=$(ask "无法获取最新版本，请手动输入版本号（如 1.12.0）")
   [[ -z $ver ]] && return 1
   ver=${ver#v}
-  url="${GH_PROXY}https://github.com/SagerNet/sing-box/releases/download/v${ver}/sing-box-${ver}-linux-${arch}.tar.gz"
-  tmp=$(mktemp -d)
-  info "下载 sing-box v$ver ($arch) ..."
-  if ! curl -fL --retry 3 --connect-timeout 15 -o "$tmp/sb.tgz" "$url"; then
-    err "下载失败，可设置 GH_PROXY 使用加速地址后重试"; rm -rf "$tmp"; return 1
-  fi
-  tar -xzf "$tmp/sb.tgz" -C "$tmp" || { err "解压失败"; rm -rf "$tmp"; return 1; }
-  mkdir -p "$(dirname "$SB_BIN")"
-  install -m 755 "$tmp"/sing-box-*/sing-box "$SB_BIN.new" && mv -f "$SB_BIN.new" "$SB_BIN"
+  [[ $ver =~ ^[0-9]+\.[0-9]+\.[0-9]+[-.a-zA-Z0-9]*$ ]] || { err "无效版本号: $ver"; return 1; }
+  tmp=$(mktemp -d) || return 1
+  for variant in "${variants[@]}"; do
+    url="${GH_PROXY}https://github.com/SagerNet/sing-box/releases/download/v${ver}/sing-box-${ver}-linux-${arch}${variant}.tar.gz"
+    info "下载 sing-box v$ver ($arch${variant}) ..."
+    if ! curl -fL --retry 3 --connect-timeout 15 -o "$tmp/sb.tgz" "$url"; then
+      warn "下载失败，尝试其他兼容构建"; continue
+    fi
+    rm -rf "$tmp/unpack"
+    mkdir -p "$tmp/unpack" || { rm -rf "$tmp"; return 1; }
+    if ! tar -xzf "$tmp/sb.tgz" -C "$tmp/unpack"; then
+      warn "解压失败，尝试其他兼容构建"; continue
+    fi
+    candidate="$tmp/unpack/sing-box-${ver}-linux-${arch}${variant}/sing-box"
+    # 先验证可执行性，再替换现有内核，避免安装失败破坏可用版本。
+    if ! output=$(SB_BIN="$candidate" core_version); then
+      warn "该构建无法运行，可能缺少动态加载器/运行库或架构不兼容"
+      "$candidate" version >&2 2>&1
+      continue
+    fi
+    mkdir -p "$(dirname "$SB_BIN")" || { rm -rf "$tmp"; return 1; }
+    staged=$(mktemp "${SB_BIN}.new.XXXXXX") || { rm -rf "$tmp"; return 1; }
+    if ! install -m 755 "$candidate" "$staged" ||
+       ! SB_BIN="$staged" core_version >/dev/null ||
+       ! mv -f "$staged" "$SB_BIN"; then
+      err "内核安装失败，原内核未替换"
+      rm -f "$staged"; rm -rf "$tmp"; return 1
+    fi
+    rm -rf "$tmp"
+    info "已安装: sing-box version $output"
+    return 0
+  done
   rm -rf "$tmp"
-  info "已安装: $("$SB_BIN" version | head -n1)"
+  err "没有成功安装可运行的内核，请检查下载网络（可设置 GH_PROXY）、系统运行库及 CPU 架构"
+  return 1
 }
 
 sb_args() {
@@ -237,8 +277,12 @@ write_base() {
 }
 
 need_core() {
-  [[ -x $SB_BIN ]] && return 0
-  warn "尚未安装 sing-box 内核"
+  core_version >/dev/null && return 0
+  if [[ -e $SB_BIN ]]; then
+    warn "sing-box 内核已存在但无法运行，需要重新安装兼容版本"
+  else
+    warn "尚未安装 sing-box 内核"
+  fi
   confirm "现在安装最新版?" y || return 1
   install_core && write_service
 }

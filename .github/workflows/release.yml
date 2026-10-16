@@ -1,0 +1,44 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate version and branch
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          source scripts/release.sh
+          version=$(sed -n 's/^SB_VERSION="\([^"]*\)"$/\1/p' sb.sh)
+          valid_version "$version" || { echo 'Invalid SB_VERSION'; exit 1; }
+          [[ "$TAG" == "v$version" ]] || { echo 'Tag does not match SB_VERSION'; exit 1; }
+          git merge-base --is-ancestor HEAD origin/main
+      - name: Run checks
+        run: bash scripts/check.sh
+      - name: Prepare release assets
+        run: |
+          mkdir -p dist
+          install -m 755 sb.sh dist/sb.sh
+          cd dist
+          sha256sum sb.sh > SHA256SUMS
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" dist/sb.sh dist/SHA256SUMS \
+            --verify-tag --title "sb $TAG" --generate-notes
