@@ -2,10 +2,16 @@ name: Release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '已有版本标签，例如 v1.0.1'
+        required: true
+        type: string
 permissions:
   contents: read
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 jobs:
   release:
@@ -15,11 +21,12 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
+          ref: ${{ inputs.tag || github.ref_name }}
           fetch-depth: 0
           persist-credentials: false
       - name: Validate version and branch
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           source scripts/release.sh
           version=$(sed -n 's/^SB_VERSION="\([^"]*\)"$/\1/p' sb.sh)
@@ -38,7 +45,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           gh release create "$TAG" dist/sb.sh dist/SHA256SUMS \
             --verify-tag --title "sb $TAG" --generate-notes
