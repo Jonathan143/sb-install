@@ -6,7 +6,7 @@
 
 - **支持协议**：VLESS+Reality、VLESS+WS+TLS、Hysteria2、TUIC v5、AnyTLS
 - **端口**：自定义，默认在 20000-60000 随机；监听端口与对外端口分开设置，适配 NAT 小鸡
-- **Reality**：Flow（`xtls-rprx-vision`）可选开启或关闭；SNI 内置常用推荐列表，可手动输入，默认随机，并自动检测目标站是否支持 TLS1.3 + h2
+- **Reality**：Flow（`xtls-rprx-vision`）可选开启或关闭；SNI 支持多轮并发测速优选，展示平均握手耗时与成功率，按排名选择或手动输入，并检测 TLS 1.3、h2 和证书有效性
 - **证书**：
   - DNS-01 自动申请（acme.sh，内置 Cloudflare / 阿里云 / DNSPod，也可填写其他 acme.sh DNS 插件），无需 80/443 端口，适合 NAT 机器
   - sing-box 内置 ACME（HTTP-01 / TLS-ALPN-01，需要公网 80 或 443）
@@ -87,6 +87,17 @@ curl -fsSL -o /usr/local/bin/sb ${GH_PROXY}https://raw.githubusercontent.com/Jon
 - **连接地址**：自动检测到的 IP 可能是共享出口，添加节点时可以手动改成域名或正确的 IP。
 - **WS + CDN**：如果要经 Cloudflare CDN，对外端口必须是 443、2053、2083、2087、2096、8443 之一。
 
+### Reality SNI 域名优选
+
+新增 Reality 节点，或执行 `sb edit` 修改 Reality 节点的 SNI 时，默认进入「域名优选」，也可以直接选择手动输入。
+
+- 使用内置候选列表；修改节点时也会测试当前 SNI，并在结果中标记「当前」。
+- 最多同时测试 4 个域名，每个域名测试 3 次，单次超时 2 秒。每轮都检查 TLS 1.3、h2、证书信任与域名匹配。
+- 连续 3 次通过的域名按平均连接及 TLS 握手耗时升序排名，第一名标记「推荐」。输入排名选择，或回车使用第一名；部分成功及失败结果单独标明，不参与推荐。
+- 输入 `r` 重新测试、`m` 手动选择/输入、`0` 取消。手动域名检测失败时，只有明确确认后才会使用。
+
+测速从运行脚本的服务器发起，包含域名解析和连接开销，仅反映当时服务器到目标站点的表现，不代表客户端连接节点的延迟或下载速度。目标站返回 HTTP 403/404 不影响检测，因为测试只建立 TLS 连接。优选需要 `timeout` 和毫秒计时支持（Bash 5 或支持 `%3N` 的 `date`）；缺少 `timeout` 时安装流程会尝试安装 `coreutils`。
+
 ### 证书申请凭据
 
 DNS-01 申请前会检查 Let's Encrypt 的 ACME 目录连接，申请时显式指定完整 CA URL，避免 CA 别名或旧默认配置异常。CA 初始化失败、Cloudflare API 连接/授权失败和 DNS 记录操作失败会分别提示。
@@ -124,7 +135,7 @@ DNS-01 申请前会检查 Let's Encrypt 的 ACME 目录连接，申请时显式�
 `anytls://` 和 `tuic://` 的 URI 格式在各客户端之间并不完全统一。导入失败时，请使用 `sb info` 输出的 sing-box outbound JSON。
 
 **Reality 的 SNI 检测全部不通过？**
-检测需要服务器能访问目标站点的 443 端口。如果服务器所在网络限制了对外访问，检测会失败，脚本会给出警告并使用随机选中的站点。
+检测需要服务器能访问目标站点的 443 端口，且本机 OpenSSL 支持 TLS 1.3、系统时间和 CA 证书正常。全部失败时不会自动选中域名，可重测、手动输入其他域名或取消；修改节点时取消会保留原配置。
 
 **如何更换 Reality 的 SNI 或开关 Flow？**
 执行 `sb edit`，选择对应节点和选项即可，修改后自动校验并重启。
@@ -188,3 +199,4 @@ curl -fsSL "$SCRIPT_URL" -o /usr/local/bin/sb && chmod +x /usr/local/bin/sb && S
 
 - [SagerNet/sing-box](https://github.com/SagerNet/sing-box)
 - [acmesh-official/acme.sh](https://github.com/acmesh-official/acme.sh)
+- [harenaNow/SNI-TLS-test](https://github.com/harenaNow/SNI-TLS-test)（SNI 多轮测速与排序思路参考）

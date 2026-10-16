@@ -8,4 +8,5 @@ bash tests/acme.sh
 bash tests/lock.sh
 bash tests/core-install.sh
 bash tests/script-update.sh
+bash tests/sni.sh
 bash tests/release.sh
