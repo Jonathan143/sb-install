@@ -44,4 +44,27 @@ for scenario in restart cli cancel install-failure move-failure eof; do
     *) grep -q '^old-script:1$' "$ROOT/output" || fail 'installation failure ignored' ;;
   esac
 done
+# A script replaced outside the current process must be loaded before showing a menu.
+(
+  SB_CMD="$ROOT/download"
+  exec 9>"$ROOT/lock"
+  main_menu
+  echo old-menu-returned
+) <<< '' > "$ROOT/output" 2>&1 || fail 'menu reload failed'
+grep -q '磁盘已安装 v9.9.9' "$ROOT/output" || fail 'missing version mismatch notice'
+grep -q '^new-script$' "$ROOT/output" || fail 'menu did not load installed script'
+if grep -Eq 'old-menu-returned|管理脚本 v' "$ROOT/output"; then fail 'stale menu displayed'; fi
+# A matching version or a missing installed file must still allow normal menu exit.
+for scenario in matching missing; do
+  (
+    SB_CMD="$ROOT/$scenario"
+    [[ $scenario != matching ]] || printf 'SB_VERSION="%s"\n' "$SB_VERSION" > "$SB_CMD"
+    svc() { return 0; }
+    core_version() { echo test; }
+    list_ids() { echo 1; }
+    ask() { echo 0; }
+    main_menu
+  ) > "$ROOT/output" 2>&1 || fail "$scenario menu failed"
+  grep -q "管理脚本 v$SB_VERSION" "$ROOT/output" || fail "$scenario menu missing"
+done
 echo 'PASS: script update regression tests'

@@ -84,11 +84,13 @@ done
 printf '%s\n' "$*" >> "$TEST_ROOT/acme-args"
 case $1 in
   --issue)
+    if [[ ${FORK_STAGE:-} == issue ]]; then echo "acme.sh: can't fork: Resource temporarily unavailable"; exit "${ISSUE_RC:-2}"; fi
     [[ " $* " == *' --server https://acme-v02.api.letsencrypt.org/directory '* ]] || exit 99
     if [[ $ISSUE_RC == 12 ]]; then echo 'Cannot init API for invalid-directory'; exit 12; fi
     if [[ $ISSUE_RC == 13 ]]; then echo 'Add txt record error.'; exit 13; fi
     exit "${ISSUE_RC:-0}" ;;
   --install-cert)
+    if [[ ${FORK_STAGE:-} == install ]]; then echo "acme.sh: can't fork: Resource temporarily unavailable"; exit 1; fi
     [[ ${INSTALL_FAIL:-0} != 1 ]] || exit 1
     while (($#)); do
       case $1 in --fullchain-file|--key-file) echo test > "$2"; shift ;; esac
@@ -125,6 +127,21 @@ SCRIPT
   if cert_dns > "$ROOT/output" 2>&1; then fail 'install failure ignored'; fi
   grep -q '安装证书文件失败' "$ROOT/output" || fail 'wrong install diagnostic'
   unset INSTALL_FAIL
+  for FORK_STAGE in issue install; do
+    export FORK_STAGE
+    for ISSUE_RC in 0 1 2; do
+      export ISSUE_RC
+      : > "$ROOT/acme-args"
+      if cert_dns > "$ROOT/output" 2>&1; then fail 'fork failure accepted'; fi
+      # A normal issue exit 1 stops before reaching the install stage.
+      if [[ $FORK_STAGE == install && $ISSUE_RC == 1 ]]; then continue; fi
+      grep -q '无法创建子进程' "$ROOT/output" || fail 'missing resource diagnostic'
+      if grep -q '证书已签发' "$ROOT/output"; then fail 'claimed issuance after fork failure'; fi
+      if [[ $FORK_STAGE == issue ]] && grep -q -- '--install-cert' "$ROOT/acme-args"; then fail 'installed after fork failure'; fi
+    done
+  done
+  unset FORK_STAGE
+  ISSUE_RC=0
   MODE=invalid; : > "$ROOT/acme-args"
   if cert_dns < /dev/null >/dev/null 2>&1; then fail 'issuance accepted invalid token'; fi
   [[ ! -s $ROOT/acme-args ]] || fail 'acme called with invalid token'

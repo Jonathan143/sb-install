@@ -585,6 +585,18 @@ cf_preflight() {
   return 1
 }
 
+acme_resource_error() {
+  local line
+  while IFS= read -r line || [[ -n $line ]]; do
+    case $line in
+      *"can't fork"*|*"Cannot fork"*|*"cannot fork"*|*"fork: retry:"*|*"fork: Resource temporarily unavailable"*)
+        err "acme.sh 无法创建子进程，证书操作未完成；请检查进程/线程数量、容器 PID 配额和内存，释放资源后重试"
+        return 0 ;;
+    esac
+  done < "$1"
+  return 1
+}
+
 acme_issue_error() {
   local log=$1
   if grep -Eqi 'Cannot init API|Can not init API|Unable to init API' "$log"; then
@@ -598,6 +610,7 @@ acme_issue_error() {
 
 cert_dns() {
   local c dns name val plugin d="$CERT_DIR/$N_DOMAIN" rc log retry
+  local -a pipe_rc
   install_acme || return 1
   acme_directory_check || return 1
   echo "DNS 服务商:  1) Cloudflare   2) 阿里云   3) DNSPod   4) 其他（acme.sh 插件）"
@@ -634,16 +647,30 @@ cert_dns() {
   info "正在申请证书（DNS 验证通常需要 1-2 分钟）..."
   log=$(mktemp) || return 1
   "$ACME_SH" --issue --server "$ACME_SERVER" --dns "$dns" -d "$N_DOMAIN" --keylength ec-256 2>&1 | tee "$log"
-  rc=${PIPESTATUS[0]}
+  pipe_rc=("${PIPESTATUS[@]}")
+  rc=${pipe_rc[0]}
+  if acme_resource_error "$log"; then
+    rm -f "$log"; return 1
+  fi
+  if ((pipe_rc[1] != 0)); then
+    err "无法记录证书申请日志，未继续安装证书"; rm -f "$log"; return 1
+  fi
   if ((rc != 0 && rc != 2)); then
     acme_issue_error "$log"; rm -f "$log"; return 1
   fi
-  rm -f "$log"
-  mkdir -p "$d"
+  mkdir -p "$d" || { rm -f "$log"; return 1; }
   "$ACME_SH" --install-cert -d "$N_DOMAIN" --ecc \
-    --fullchain-file "$d/fullchain.pem" --key-file "$d/key.pem" --reloadcmd "$(reload_cmd)" >/dev/null 2>&1 || {
-      err "证书已签发，但安装证书文件失败，请检查 acme.sh 配置和目录权限"; return 1;
-    }
+    --fullchain-file "$d/fullchain.pem" --key-file "$d/key.pem" --reloadcmd "$(reload_cmd)" > "$log" 2>&1
+  rc=$?
+  if acme_resource_error "$log"; then
+    rm -f "$log"; return 1
+  fi
+  if ((rc != 0)); then
+    cat "$log" >&2
+    err "安装证书文件失败，无法确认签发和部署是否完成；请检查上方日志、acme.sh 配置和目录权限"
+    rm -f "$log"; return 1
+  fi
+  rm -f "$log"
   [[ -s $d/fullchain.pem && -s $d/key.pem ]] || { err "证书安装失败"; return 1; }
   chmod 600 "$d/key.pem"
   N_CERTMODE=dns; N_CERT=$d/fullchain.pem; N_KEY=$d/key.pem; N_INSECURE=0
@@ -1127,7 +1154,7 @@ service_menu() {
 # 证书管理 / 内核与脚本更新 / 卸载
 #---------------------------------------------------------------------
 cert_menu() {
-  local d dom c
+  local d dom c rc=0
   echo "已保存的证书:"
   for d in "$CERT_DIR"/*/; do
     [[ -s ${d}fullchain.pem ]] || continue
@@ -1137,11 +1164,20 @@ cert_menu() {
   echo
   echo "  1) 强制续期某个域名（acme.sh）   0) 返回"
   c=$(ask "请选择" 0)
+  [[ $c != 0 ]] || return 0
   if [[ $c == 1 ]]; then
-    [[ -x $ACME_SH ]] || { err "尚未安装 acme.sh"; return 1; }
-    dom=$(ask_domain "域名")
-    "$ACME_SH" --renew -d "$dom" --ecc --force && info "续期完成（证书已自动部署并重启服务）"
+    if [[ -x $ACME_SH ]]; then
+      dom=$(ask_domain "域名")
+      "$ACME_SH" --renew -d "$dom" --ecc --force && info "续期完成（证书已自动部署并重启服务）"
+      rc=$?
+    else
+      err "尚未安装 acme.sh"; rc=1
+    fi
+  else
+    warn "无效选择"; rc=1
   fi
+  [[ ${1:-} != pause ]] || pause
+  return "$rc"
 }
 
 update_core() {
@@ -1168,8 +1204,18 @@ core_menu() {
   esac
 }
 
+restart_script() {
+  local reply
+  read -rp "按回车重新运行 sb..." reply || exit 0
+  # Release the old process's lock before the new script acquires its own.
+  exec 9>&-
+  exec bash "$SB_CMD"
+  err "重新运行失败，请手动运行 sb"
+  exit 1
+}
+
 update_script() {
-  local tmp new reply
+  local tmp new
   [[ -n $SCRIPT_URL ]] || { err "未设置 SCRIPT_URL，无法在线更新。可用 SCRIPT_URL=<直链> sb update 指定一次"; return 1; }
   tmp=$(mktemp)
   curl -fsSL "$SCRIPT_URL" -o "$tmp" || { err "下载失败"; rm -f "$tmp"; return 1; }
@@ -1186,12 +1232,7 @@ update_script() {
   save_conf
   if [[ ${1:-} == restart ]]; then
     info "脚本已更新"
-    read -rp "按回车重新运行 sb..." reply || exit 0
-    # Release the old process's lock before the new script acquires its own.
-    exec 9>&-
-    exec bash "$SB_CMD"
-    err "重新运行失败，请手动运行 sb"
-    exit 1
+    restart_script
   fi
   info "脚本已更新，请重新运行 sb"
 }
@@ -1235,8 +1276,13 @@ EOF
 }
 
 main_menu() {
-  local c st
+  local c st installed
   while true; do
+    installed=$(sed -n 's/^SB_VERSION="\([0-9][0-9.]*\)"/\1/p' "$SB_CMD" 2>/dev/null | head -n1)
+    if [[ -n $installed && $installed != "$SB_VERSION" ]]; then
+      info "当前运行 v${SB_VERSION}，磁盘已安装 v${installed}，需要重新加载脚本"
+      restart_script
+    fi
     if svc is-active; then st="${GREEN}运行中${PLAIN}"; else st="${RED}未运行${PLAIN}"; fi
     echo
     echo -e "${CYAN}========== sing-box 管理脚本 v$SB_VERSION ==========${PLAIN}"
@@ -1256,7 +1302,7 @@ main_menu() {
       5) show_status ;;
       6) show_log ;;
       7) service_menu ;;
-      8) cert_menu ;;
+      8) cert_menu pause; continue ;;
       9) echo "  1) 更新内核   2) 更新脚本"; case $(ask "请选择") in 1) update_core ;; 2) update_script restart ;; esac ;;
       10) uninstall_all; [[ -x $SB_CMD ]] || return ;;
       0|q) return ;;
