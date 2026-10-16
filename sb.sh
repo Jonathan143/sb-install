@@ -555,7 +555,7 @@ cf_preflight() {
     cf_api_get "accounts/$CF_Account_ID/tokens/verify" || return 1
   fi
   if ! cf_api_ok; then
-    err "Cloudflare Token 验证失败（HTTP $CF_HTTP）：请检查 Token、有效期和来源 IP 限制；账户级 Token 还需填写 Account ID"
+    err "Cloudflare Token 验证失败（HTTP ${CF_HTTP}）：请检查 Token、有效期和来源 IP 限制；账户级 Token 还需填写 Account ID"
     return 1
   fi
   status=$(jq -r '.result.status // empty' <<< "$CF_RESPONSE")
@@ -597,7 +597,7 @@ acme_issue_error() {
 }
 
 cert_dns() {
-  local c dns name val plugin d="$CERT_DIR/$N_DOMAIN" rc log
+  local c dns name val plugin d="$CERT_DIR/$N_DOMAIN" rc log retry
   install_acme || return 1
   acme_directory_check || return 1
   echo "DNS 服务商:  1) Cloudflare   2) 阿里云   3) DNSPod   4) 其他（acme.sh 插件）"
@@ -605,10 +605,14 @@ cert_dns() {
   case $c in
     1) dns=dns_cf
        info "Cloudflare 推荐使用 API Token（权限: Zone-DNS-Edit + Zone-Zone-Read）"
-       export CF_Token; CF_Token=$(ask_secret "CF_Token")
-       val=$(ask "CF_Account_ID（用户 Token 可留空，账户级 Token 必填）")
-       export CF_Account_ID=$val
-       cf_preflight || return 1 ;;
+       while true; do
+         export CF_Token; CF_Token=$(ask_secret "CF_Token")
+         val=$(ask "CF_Account_ID（用户 Token 可留空，账户级 Token 必填）")
+         export CF_Account_ID=$val
+         cf_preflight && break
+         read -rp "按回车重新填写 Cloudflare 凭据，输入 q 取消: " retry || return 1
+         [[ $retry != [qQ] ]] || return 1
+       done ;;
     2) dns=dns_ali
        export Ali_Key; Ali_Key=$(ask "Ali_Key (AccessKey ID)")
        export Ali_Secret; Ali_Secret=$(ask_secret "Ali_Secret") ;;
@@ -1165,7 +1169,7 @@ core_menu() {
 }
 
 update_script() {
-  local tmp new
+  local tmp new reply
   [[ -n $SCRIPT_URL ]] || { err "未设置 SCRIPT_URL，无法在线更新。可用 SCRIPT_URL=<直链> sb update 指定一次"; return 1; }
   tmp=$(mktemp)
   curl -fsSL "$SCRIPT_URL" -o "$tmp" || { err "下载失败"; rm -f "$tmp"; return 1; }
@@ -1173,8 +1177,22 @@ update_script() {
   new=$(sed -n 's/^SB_VERSION="\(.*\)"/\1/p' "$tmp" | head -n1)
   info "当前 v$SB_VERSION，远程 v${new:-?}"
   confirm "更新脚本?" y || { rm -f "$tmp"; return 0; }
-  install -m 755 "$tmp" "$SB_CMD.new" && mv -f "$SB_CMD.new" "$SB_CMD"; rm -f "$tmp"
+  if ! install -m 755 "$tmp" "$SB_CMD.new" || ! mv -f "$SB_CMD.new" "$SB_CMD"; then
+    rm -f "$tmp" "$SB_CMD.new"
+    err "脚本安装失败，未重新运行"
+    return 1
+  fi
+  rm -f "$tmp"
   save_conf
+  if [[ ${1:-} == restart ]]; then
+    info "脚本已更新"
+    read -rp "按回车重新运行 sb..." reply || exit 0
+    # Release the old process's lock before the new script acquires its own.
+    exec 9>&-
+    exec bash "$SB_CMD"
+    err "重新运行失败，请手动运行 sb"
+    exit 1
+  fi
   info "脚本已更新，请重新运行 sb"
 }
 
@@ -1239,7 +1257,7 @@ main_menu() {
       6) show_log ;;
       7) service_menu ;;
       8) cert_menu ;;
-      9) echo "  1) 更新内核   2) 更新脚本"; case $(ask "请选择") in 1) update_core ;; 2) update_script ;; esac ;;
+      9) echo "  1) 更新内核   2) 更新脚本"; case $(ask "请选择") in 1) update_core ;; 2) update_script restart ;; esac ;;
       10) uninstall_all; [[ -x $SB_CMD ]] || return ;;
       0|q) return ;;
       *) warn "无效选择" ;;

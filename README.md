@@ -66,6 +66,8 @@ curl -fsSL -o /usr/local/bin/sb ${GH_PROXY}https://raw.githubusercontent.com/Jon
 | `sb update` | 更新 sb 脚本本身 |
 | `sb uninstall` | 卸载 |
 
+在主菜单选择「9 → 2」更新脚本成功后，按回车会直接重新运行新版 `sb`。使用 `sb update` 命令则在更新完成后退出。
+
 ## 协议与证书说明
 
 | 协议 | 传输 | 需要证书 |

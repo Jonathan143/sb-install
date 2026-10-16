@@ -126,7 +126,29 @@ SCRIPT
   grep -q '安装证书文件失败' "$ROOT/output" || fail 'wrong install diagnostic'
   unset INSTALL_FAIL
   MODE=invalid; : > "$ROOT/acme-args"
-  if cert_dns >/dev/null 2>&1; then fail 'issuance accepted invalid token'; fi
+  if cert_dns < /dev/null >/dev/null 2>&1; then fail 'issuance accepted invalid token'; fi
   [[ ! -s $ROOT/acme-args ]] || fail 'acme called with invalid token'
+  if cert_dns <<< q > /dev/null 2>&1; then fail 'cancel ignored'; fi
+  [[ ! -s $ROOT/acme-args ]] || fail 'acme called after cancellation'
+  # First attempt gets an HTTP error; Enter retries credentials in the same flow.
+  ask_secret() {
+    echo attempt >> "$ROOT/token-attempts"
+    echo test-token-do-not-log
+  }
+  curl() {
+    local body code
+    if [[ $(wc -l < "$ROOT/token-attempts") -eq 1 ]]; then
+      body='{"success":false}'; code=401
+    elif [[ ${!#} == */user/tokens/verify ]]; then
+      body='{"success":true,"result":{"status":"active"}}'; code=200
+    else
+      body="{\"success\":true,\"result\":[{\"id\":\"$ZONE\",\"name\":\"example.co.uk\",\"account\":{\"id\":\"$ACCOUNT\"}}]}"; code=200
+    fi
+    printf '%s\n%s' "$body" "$code"
+  }
+  cert_dns <<< '' > "$ROOT/output" 2>&1 || fail 'retry did not complete issuance'
+  [[ $(wc -l < "$ROOT/token-attempts") -eq 2 ]] || fail 'credentials not requested again'
+  grep -q 'HTTP 401' "$ROOT/output" || fail 'missing first failure'
+  grep -q -- '--install-cert' "$ROOT/acme-args" || fail 'retry did not install certificate'
 ) || exit 1
 echo 'PASS: ACME and Cloudflare preflight regression tests'
