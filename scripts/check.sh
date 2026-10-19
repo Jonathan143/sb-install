@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-for script in sb.sh scripts/*.sh tests/*.sh; do
+for script in sb.sh lib/*.sh scripts/*.sh tests/*.sh; do
   bash -n "$script"
 done
 bash tests/acme.sh
@@ -11,3 +11,6 @@ bash tests/script-update.sh
 bash tests/sni.sh
 bash tests/multiplex.sh
 bash tests/release.sh
+
+bash tests/build.sh
+bash tests/ui.sh

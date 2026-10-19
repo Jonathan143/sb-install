@@ -68,3 +68,14 @@ for scenario in matching missing; do
   grep -q "管理脚本 v$SB_VERSION" "$ROOT/output" || fail "$scenario menu missing"
 done
 echo 'PASS: script update regression tests'
+
+# A raw source entry lacks its modules and must never replace an installed command.
+(
+  SB_CMD="$ROOT/protected"
+  printf 'existing-command\n' > "$SB_CMD"
+  SCRIPT_URL=https://example.invalid/source
+  curl() { printf '#!/usr/bin/env bash\nSB_SOURCE_DIR=/missing\n' > "$4"; }
+  confirm() { fail 'source loader reached confirmation'; }
+  if update_script; then fail 'source loader installed'; fi
+  [[ $(cat "$SB_CMD") == existing-command ]] || fail 'existing command replaced'
+) || exit 1

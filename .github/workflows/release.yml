@@ -37,8 +37,7 @@ jobs:
         run: bash scripts/check.sh
       - name: Prepare release assets
         run: |
-          mkdir -p dist
-          install -m 755 sb.sh dist/sb.sh
+          bash scripts/build.sh
           cd dist
           sha256sum sb.sh > SHA256SUMS
       - name: Publish GitHub Release

@@ -22,10 +22,10 @@
 
 ## 一键安装
 
-需要 root 用户。把下面命令中的 `Jonathan143/sb-install` 换成你的 GitHub 仓库路径（脚本文件名为 `sb.sh`，分支为 `main`）。
+需要 root 用户。把下面命令中的 `Jonathan143/sb-install` 换成你的 GitHub 仓库路径（需已发布含独立 `sb.sh` 的 Release）。
 
 ```bash
-curl -fsSL -o /usr/local/bin/sb https://raw.githubusercontent.com/Jonathan143/sb-install/main/sb.sh && chmod +x /usr/local/bin/sb && SCRIPT_URL=https://raw.githubusercontent.com/Jonathan143/sb-install/main/sb.sh sb
+curl -fsSL -o /usr/local/bin/sb https://github.com/Jonathan143/sb-install/releases/latest/download/sb.sh && chmod +x /usr/local/bin/sb && SCRIPT_URL=https://github.com/Jonathan143/sb-install/releases/latest/download/sb.sh sb
 ```
 
 安装完成后，以后直接输入 `sb` 即可打开菜单。
@@ -33,7 +33,7 @@ curl -fsSL -o /usr/local/bin/sb https://raw.githubusercontent.com/Jonathan143/sb
 也可以不落盘，直接运行（脚本会自动把自己安装为 `sb` 命令）：
 
 ```bash
-SCRIPT_URL=https://raw.githubusercontent.com/Jonathan143/sb-install/main/sb.sh bash <(curl -fsSL https://raw.githubusercontent.com/Jonathan143/sb-install/main/sb.sh)
+SCRIPT_URL=https://github.com/Jonathan143/sb-install/releases/latest/download/sb.sh bash <(curl -fsSL https://github.com/Jonathan143/sb-install/releases/latest/download/sb.sh)
 ```
 
 ### 国内或无法直连 GitHub 的机器
@@ -42,7 +42,7 @@ SCRIPT_URL=https://raw.githubusercontent.com/Jonathan143/sb-install/main/sb.sh b
 
 ```bash
 export GH_PROXY=https://ghfast.top/
-curl -fsSL -o /usr/local/bin/sb ${GH_PROXY}https://raw.githubusercontent.com/Jonathan143/sb-install/main/sb.sh && chmod +x /usr/local/bin/sb && SCRIPT_URL=${GH_PROXY}https://raw.githubusercontent.com/Jonathan143/sb-install/main/sb.sh sb
+curl -fsSL -o /usr/local/bin/sb ${GH_PROXY}https://github.com/Jonathan143/sb-install/releases/latest/download/sb.sh && chmod +x /usr/local/bin/sb && SCRIPT_URL=${GH_PROXY}https://github.com/Jonathan143/sb-install/releases/latest/download/sb.sh sb
 ```
 
 > `GH_PROXY` 只对本次运行生效。之后如需更新内核，可以再次 `export` 后执行 `sb core`。
@@ -179,6 +179,34 @@ sb uninstall
 
 可以选择是否保留 `/etc/sing-box` 下的配置和证书，以及是否同时卸载 acme.sh。
 
+## 源码结构与本地开发
+
+源码按功能拆分，根目录 `sb.sh` 只维护版本号、加载模块和调用入口；加载顺序统一记录在 `lib/modules.list`。
+
+| 模块 | 职责 |
+|---|---|
+| `defaults.sh` / `config.sh` | 路径、默认值、配置与节点元数据 |
+| `ui.sh` / `menu.sh` / `cli.sh` | 交互组件、菜单、命令分发 |
+| `utils.sh` / `system.sh` / `lock.sh` | 通用工具、系统依赖、运行锁 |
+| `core.sh` / `bootstrap.sh` | 内核安装、服务定义、首次初始化与自安装 |
+| `network.sh` / `sni.sh` | 端口、防火墙、地址检测、Reality 域名优选 |
+| `certificates.sh` | ACME、DNS 验证、证书申请与导入 |
+| `protocols.sh` / `sharing.sh` | 服务端协议配置、链接与客户端配置 |
+| `nodes.sh` / `transaction.sh` | 节点增删改、快照、应用与回滚 |
+| `service.sh` / `maintenance.sh` | 状态、日志、服务控制、更新与卸载 |
+
+克隆完整仓库后运行 `bash sb.sh help`；服务器上可直接运行 `bash sb.sh`，首次安装会自动打包为独立的 `/usr/local/bin/sb`。修改功能时编辑对应的 `lib/` 模块。
+
+```bash
+bash scripts/check.sh       # 语法、功能、交互及独立产物回归检查
+bash scripts/build.sh       # 生成 dist/sb.sh（不提交生成文件）
+bash dist/sb.sh help        # 无需 lib 目录即可运行
+```
+
+Release 工作流自动生成独立脚本并计算校验和；部署时无需额外下载模块。新建模块后，记得加入 `lib/modules.list`。
+
+菜单按功能分组，支持 `0` / `q` 返回或退出；无效选项会重新提示。确认操作只接受完整的 y/yes 或 n/no，输入结束不会自动确认。非终端输出自动禁用颜色，也可设置 `NO_COLOR=1`。输入提示写入标准错误，便于保留命令输出。
+
 ## 版本发布（维护者）
 
 版本号统一维护在 `sb.sh` 的 `SB_VERSION` 中，Git 标签格式为 `vX.Y.Z`。在 `main` 分支提交好全部修改后运行：
@@ -214,7 +242,7 @@ SCRIPT_URL=https://github.com/Jonathan143/sb-install/releases/latest/download/sb
 curl -fsSL "$SCRIPT_URL" -o /usr/local/bin/sb && chmod +x /usr/local/bin/sb && SCRIPT_URL="$SCRIPT_URL" sb
 ```
 
-固定版本可使用 `https://github.com/Jonathan143/sb-install/releases/download/v1.0.1/sb.sh`（替换为实际已发布版本）；固定版本地址不会自动跟随最新版。原先的 `main` 安装地址仍可使用，获取的是分支上的代码。
+固定版本可使用 `https://github.com/Jonathan143/sb-install/releases/download/v1.0.1/sb.sh`（替换为实际已发布版本）；固定版本地址不会自动跟随最新版。仓库根目录的 `sb.sh` 现在是模块入口，不能单独下载运行。原先使用 `raw.../main/sb.sh` 的用户，请执行 `SCRIPT_URL=https://github.com/Jonathan143/sb-install/releases/latest/download/sb.sh sb update`，切换到独立发布脚本。
 
 ## 免责声明
 
