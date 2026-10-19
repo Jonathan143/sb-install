@@ -16,13 +16,18 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
     [[ $MODE == tls12 ]] && echo 'TLSv1.2' || echo 'New, TLSv1.3, Cipher is TLS_AES_256_GCM_SHA384'
     [[ $MODE == no-h2 ]] || echo 'ALPN protocol: h2'
     [[ $MODE == bad-cert ]] || echo 'Verify return code: 0 (ok)'
-    case $MODE in timeout) return 124 ;; failure) return 1 ;; esac
+    # HTTP/2 SETTINGS frames can arrive without an HTTP request.
+    printf '\000\000\000\004\000\000\000\000\000'
+    case $MODE in timeout) return 124 ;; killed) return 137 ;; terminated) return 143 ;; failure) return 1 ;; esac
     return 0
   }
-  MODE=ok; check_sni test.example 2 || fail 'valid handshake rejected'
-  for MODE in tls12 no-h2 bad-cert timeout failure; do
-    if check_sni test.example; then fail "$MODE handshake accepted"; fi
+  MODE=ok; check_sni test.example 2 2> "$ROOT/handshake-stderr" || fail 'valid handshake rejected'
+  [[ ! -s $ROOT/handshake-stderr ]] || fail 'binary handshake emitted a warning'
+  for MODE in tls12 no-h2 bad-cert timeout killed terminated failure; do
+    if check_sni test.example 2> "$ROOT/handshake-stderr"; then fail "$MODE handshake accepted"; fi
+    [[ ! -s $ROOT/handshake-stderr ]] || fail 'binary failure emitted a warning'
     [[ -n $SNI_FAILURE ]] || fail 'missing failure reason'
+    case $MODE in timeout|killed|terminated) [[ $SNI_FAILURE == 超时 ]] || fail 'timeout status lost in pipeline' ;; esac
   done
 ) || exit 1
 

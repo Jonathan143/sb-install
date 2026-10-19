@@ -18,10 +18,14 @@ check_sni() { # 域名 [超时秒数]；SNI_FAILURE 返回失败原因
   local out rc
   SNI_FAILURE="连接/TLS/证书失败"
   # 不发送 HTTP 请求，避免将目标站的 403/404 当作 TLS 失败。
-  out=$(LC_ALL=C timeout "${2:-8}" openssl s_client -connect "$1:443" \
-    -servername "$1" -tls1_3 -alpn h2 -verify_hostname "$1" \
-    -verify_return_error </dev/null 2>/dev/null)
-  rc=$?
+  # HTTP/2 servers may send binary frames after the handshake. Strip NUL bytes
+  # before Bash captures stdout, while preserving timeout/OpenSSL failures.
+  if out=$(
+    set -o pipefail
+    LC_ALL=C timeout "${2:-8}" openssl s_client -connect "$1:443" \
+      -servername "$1" -tls1_3 -alpn h2 -verify_hostname "$1" \
+      -verify_return_error </dev/null 2>/dev/null | LC_ALL=C tr -d '\000'
+  ); then rc=0; else rc=$?; fi
   if ((rc == 124 || rc == 137 || rc == 143)); then SNI_FAILURE="超时"; return 1; fi
   ((rc == 0)) || return 1
   [[ $out == *TLSv1.3* ]] || return 1
