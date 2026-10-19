@@ -59,7 +59,7 @@ main() {
   bash scripts/check.sh
   printf '\n将发布 %s → %s\n远程: %s\n' "$current" "$next" "$(git remote get-url --push origin)"
   echo '将推送以下未推送的提交，以及版本提交（如有）和标签:'
-  git log --oneline origin/main..HEAD
+  git --no-pager log --oneline origin/main..HEAD
   printf '标签: %s\n' "$tag"
   read -r -p '确认创建提交、标签并推送，触发公开发布? [y/N]: ' answer || return 0
   [[ $answer == y || $answer == Y ]] || return 0
