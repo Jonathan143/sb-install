@@ -24,6 +24,8 @@ EOF
 }
 
 main_menu() {
+  local RED GREEN YELLOW CYAN PLAIN BOLD DIM
+  ui_colors 1
   local c st installed
   while true; do
     installed=$(sed -n 's/^SB_VERSION="\([0-9][0-9.]*\)"/\1/p' "$SB_CMD" 2>/dev/null | head -n1)

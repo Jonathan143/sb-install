@@ -1,18 +1,23 @@
 #!/usr/bin/env bash
 # Terminal presentation and input. Prompts use stderr so values remain pipe-safe.
-RED=''; GREEN=''; YELLOW=''; CYAN=''; PLAIN=''; BOLD=''; DIM=''
-if [[ -t 1 && -t 2 && ${TERM:-dumb} != dumb && -z ${NO_COLOR+x} ]]; then
-  RED=$'\033[31m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; CYAN=$'\033[36m'
-  PLAIN=$'\033[0m'; BOLD=$'\033[1m'; DIM=$'\033[2m'
-fi
-info() { printf '%s[信息]%s %s\n' "$GREEN" "$PLAIN" "$*" >&2; }
-warn() { printf '%s[警告]%s %s\n' "$YELLOW" "$PLAIN" "$*" >&2; }
+# Re-evaluate the actual destination at each render, including later redirections.
+ui_colors() {
+  RED=''; GREEN=''; YELLOW=''; CYAN=''; PLAIN=''; BOLD=''; DIM=''
+  if [[ -t ${1:-1} && ${TERM:-dumb} != dumb && -z ${NO_COLOR+x} ]]; then
+    RED=$'\033[31m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; CYAN=$'\033[36m'
+    PLAIN=$'\033[0m'; BOLD=$'\033[1m'; DIM=$'\033[2m'
+  fi
+  return 0
+}
+ui_colors 1
+info() { local RED GREEN YELLOW CYAN PLAIN BOLD DIM; ui_colors 2; printf '%s[信息]%s %s\n' "$GREEN" "$PLAIN" "$*" >&2; }
+warn() { local RED GREEN YELLOW CYAN PLAIN BOLD DIM; ui_colors 2; printf '%s[警告]%s %s\n' "$YELLOW" "$PLAIN" "$*" >&2; }
 err()  { printf '%s[错误]%s %s\n' "$RED" "$PLAIN" "$*" >&2; }
 die()  { err "$*"; exit 1; }
-ui_title() { printf '\n%s━━ %s ━━%s\n' "$BOLD$CYAN" "$*" "$PLAIN"; }
-ui_section() { printf '\n%s%s%s\n' "$BOLD" "$*" "$PLAIN"; }
-ui_item() { printf '  %s%2s%s  %s\n' "$CYAN" "$1" "$PLAIN" "$2"; }
-ask() {
+ui_title() { local RED GREEN YELLOW CYAN PLAIN BOLD DIM; ui_colors 1; printf '\n%s━━ %s ━━%s\n' "$BOLD$CYAN" "$*" "$PLAIN"; }
+ui_section() { local RED GREEN YELLOW CYAN PLAIN BOLD DIM; ui_colors 1; printf '\n%s%s%s\n' "$BOLD" "$*" "$PLAIN"; }
+ui_item() { local RED GREEN YELLOW CYAN PLAIN BOLD DIM; ui_colors 1; printf '  %s%2s%s  %s\n' "$CYAN" "$1" "$PLAIN" "$2"; }
+ask() { local RED GREEN YELLOW CYAN PLAIN BOLD DIM; ui_colors 2;
   local a
   printf '%s › %s%s: %s' "$CYAN" "$1" "${2:+ [$2]}" "$PLAIN" >&2
   IFS= read -r a || return 1
@@ -50,7 +55,7 @@ ask_choice() {
     warn "请输入 1–${max}，或 0 返回"
   done
 }
-pause() {
+pause() { local RED GREEN YELLOW CYAN PLAIN BOLD DIM; ui_colors 2;
   local reply
   [[ -t 0 ]] || return 0
   printf '\n%s按回车继续…%s' "$DIM" "$PLAIN" >&2

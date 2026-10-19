@@ -85,6 +85,8 @@ EOF
 }
 
 show_node() {
+  local RED GREEN YELLOW CYAN PLAIN BOLD DIM
+  ui_colors 1
   local link
   meta_load "$1" || { err "节点 $1 不存在"; return 1; }
   echo "=================================================="

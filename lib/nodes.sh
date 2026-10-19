@@ -16,6 +16,8 @@ select_node() { # [id] -> SEL_ID
 }
 
 list_nodes() {
+  local RED GREEN YELLOW CYAN PLAIN BOLD DIM
+  ui_colors 1
   local id st
   [[ -n $(list_ids) ]] || { echo "暂无节点"; return 0; }
   printf '%-5s %-15s %-8s %-8s %-26s %-8s %s\n' 编号 协议 监听 对外 地址 状态 备注

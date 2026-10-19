@@ -20,6 +20,8 @@ SB_CMD="$ROOT/missing"
 svc() { return 1; }
 core_version() { return 1; }
 list_ids() { :; }
+# Simulate a previously colored terminal even when CI itself has no TTY.
+RED=$'\033[31m'; GREEN=$'\033[32m'; CYAN=$'\033[36m'; PLAIN=$'\033[0m'
 main_menu < /dev/null > "$ROOT/menu" || fail "menu EOF"
 if LC_ALL=C grep -q $'\033' "$ROOT/menu"; then fail 'redirected output contains ANSI'; fi
 grep -q '节点管理' "$ROOT/menu" || fail 'missing sections'
@@ -32,3 +34,10 @@ need_core() { :; }
 meta_reset() { fail 'cancel initialized node'; }
 add_node <<< 0
 echo 'PASS: terminal input, EOF, menu validation and cancellation'
+
+ui_title 'redirected title' > "$ROOT/title"
+info 'redirected info' 2> "$ROOT/info"
+if LC_ALL=C grep -q $'\033' "$ROOT/title" "$ROOT/info"; then fail 'render retained stale colors'; fi
+NO_COLOR=1
+ui_colors 1
+[[ -z $RED$GREEN$CYAN$PLAIN ]] || fail 'NO_COLOR ignored'

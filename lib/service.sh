@@ -4,6 +4,8 @@
 # 状态 / 日志 / 服务
 #---------------------------------------------------------------------
 show_status() {
+  local RED GREEN YELLOW CYAN PLAIN BOLD DIM
+  ui_colors 1
   local pid id
   echo "内核: $(core_version || true)    脚本: v$SB_VERSION    配置模式: $SB_MODE"
   if svc is-active; then echo -e "服务状态: ${GREEN}运行中${PLAIN}"; else echo -e "服务状态: ${RED}未运行${PLAIN}"; fi
