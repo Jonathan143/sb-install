@@ -14,3 +14,7 @@ jobs:
           persist-credentials: false
       - name: Syntax and regression tests
         run: bash scripts/check.sh
+      - name: Alpine 3.21 SNI tests with a 40-task PID limit
+        run: |
+          docker run --rm --pids-limit 40 -v "$PWD:/work" -w /work alpine:3.21 \
+            sh -c 'apk add --no-cache bash coreutils openssl && bash tests/sni.sh'

@@ -19,7 +19,7 @@ check_sni() { # 域名 [超时秒数]；SNI_FAILURE 返回失败原因
   SNI_FAILURE="连接/TLS/证书失败"
   output=$(mktemp "${SNI_SCAN_TMP:-${TMPDIR:-/tmp}}/handshake.XXXXXX") || { SNI_FAILURE="无法创建检测临时文件"; return 1; }
   # Capture to a file: avoid a command-substitution shell and concurrent tr.
-  # BusyBox and GNU timeout both support a hard-kill grace period.
+  # GNU timeout supervises OpenSSL with a hard-kill grace period.
   if LC_ALL=C timeout -k 1 "${2:-8}" openssl s_client -connect "$1:443" \
     -servername "$1" -tls1_3 -alpn h2 -verify_hostname "$1" \
     -verify_return_error </dev/null >"$output" 2>/dev/null; then rc=0; else rc=$?; fi
@@ -37,6 +37,24 @@ check_sni() { # 域名 [超时秒数]；SNI_FAILURE 返回失败原因
   SNI_FAILURE=""
 }
 
+sni_progress() { # 域名 [成功次数 平均耗时 状态]；只写 stderr
+  local RED GREEN YELLOW CYAN PLAIN BOLD DIM
+  local color mark state latency="-"
+  ui_colors 2
+  if (($# == 1)); then
+    printf '  %s[%s]  %-36s  … 检测中%s\n' "$DIM" "${SNI_PROGRESS_LABEL:---/--}" "$1" "$PLAIN" >&2
+    return 0
+  fi
+  case $2 in
+    3) color=$GREEN; mark='✓'; state='通过' ;;
+    0) color=$RED; mark='✗'; state=$4 ;;
+    *) color=$YELLOW; mark='!'; state=$4 ;;
+  esac
+  (( $2 == 0 )) || latency="$3 ms"
+  printf '  %s[%s]%s  %-36s  %8s  %s/3  %s%s %s%s\n' \
+    "$DIM" "${SNI_PROGRESS_LABEL:---/--}" "$PLAIN" "$1" "$latency" "$2" "$color" "$mark" "$state" "$PLAIN" >&2
+}
+
 sni_measure() { # 域名 -> 成功次数、平均毫秒、域名、状态（TSV）
   local domain=$1 round start end elapsed sum=0 ok=0 avg=0 reason="检测失败"
   for round in 1 2 3; do
@@ -51,7 +69,7 @@ sni_measure() { # 域名 -> 成功次数、平均毫秒、域名、状态（TSV�
   done
   ((ok == 0)) || avg=$(((sum + ok / 2) / ok))
   if ((ok == 3)); then reason="通过"; elif ((ok > 0)); then reason="不稳定 ($reason)"; fi
-  printf '  %s：%s，成功 %s/3，平均 %s ms\n' "$domain" "$reason" "$ok" "$avg" >&2
+  sni_progress "$domain" "$ok" "$avg" "$reason"
   printf '%s\t%s\t%s\t%s\n' "$ok" "$avg" "$domain" "$reason"
 }
 
@@ -113,7 +131,7 @@ sni_limit_concurrency() {
 }
 
 sni_scan() ( # 子 shell 隔离临时目录与信号处理；并发数 1–4
-  local tmp domain seen pid i=0 failed=0 concurrency SNI_SCAN_TMP
+  local tmp domain seen pid i=0 failed=0 concurrency SNI_SCAN_TMP SNI_PROGRESS_LABEL
   local pids=() domains=()
   concurrency=$(sni_concurrency)
   sni_limit_concurrency "$concurrency" || return 1
@@ -131,8 +149,12 @@ sni_scan() ( # 子 shell 隔离临时目录与信号处理；并发数 1–4
     done
     domains+=("$domain")
   done
+  ui_section '测试进度' >&2
+  printf '  候选 %s 个 · 并发 %s · 每域名 3 次\n' "${#domains[@]}" "$concurrency" >&2
+  printf '  单次超时 2s + 强制结束宽限 1s · TLS 1.3 / h2 / 有效证书\n\n' >&2
   for domain in "${domains[@]}"; do
-    printf '  [%s/%s] 检测 %s\n' "$((i + 1))" "${#domains[@]}" "$domain" >&2
+    printf -v SNI_PROGRESS_LABEL '%02d/%02d' "$((i + 1))" "${#domains[@]}"
+    sni_progress "$domain"
     if ((concurrency == 1)); then
       sni_measure "$domain" > "$tmp/$i" || return 1
     else
@@ -164,31 +186,45 @@ sni_valid_domain() {
 }
 
 sni_show_results() { # 已排序的 TSV 结果；仅展示，不修改节点
-  local ok ms domain state i=0 latency rank
-  echo "检测条件：TLS 1.3 + h2 + 证书有效；耗时为本服务器到目标站的连接及握手耗时。"
-  printf '  %-4s %-36s %-12s %-7s %s\n' '序号' '域名' '平均耗时' '成功率' '状态'
+  local RED GREEN YELLOW CYAN PLAIN BOLD DIM
+  local ok ms domain state i=0 latency rank color total=0 partial=0 failed=0
+  local best="" best_ms=""
+  ui_colors 1
+  ui_section '优选结果'
+  printf '  排名  %-38s  %14s  %10s  状态\n' '域名' '平均耗时' '成功率'
+  printf '  %s────────────────────────────────────────────────────────────────────────────%s\n' "$DIM" "$PLAIN"
   while IFS=$'\t' read -r ok ms domain state; do
-    rank="-"; latency="-"
+    total=$((total + 1))
+    rank="-"; latency="-"; color=$RED
     ((ok == 0)) || latency="${ms} ms"
     if ((ok == 3)); then
-      i=$((i + 1)); rank=$i
-      ((i != 1)) || state="推荐"
+      i=$((i + 1)); rank=$i; color=$GREEN
+      if ((i == 1)); then state="推荐"; best=$domain; best_ms=$ms; fi
+    elif ((ok > 0)); then
+      partial=$((partial + 1)); color=$YELLOW
+    else
+      failed=$((failed + 1))
     fi
     [[ $domain != "${N_SNI:-}" ]] || state="$state / 当前"
-    printf '  %-4s %-36s %-12s %-7s %s\n' "$rank" "$domain" "$latency" "$ok/3" "$state"
+    printf '  %s%-4s%s  %-36s  %10s  %7s  %s%s%s\n' \
+      "$color" "$rank" "$PLAIN" "$domain" "$latency" "$ok/3" "$color" "$state" "$PLAIN"
   done <<< "$1"
-  echo "仅 3/3 通过的域名参与排名，按平均耗时升序排列；此结果不代表客户端实际速度。"
+  printf '\n  共 %s 个 · 通过 %s · 不稳定 %s · 未通过 %s\n' "$total" "$i" "$partial" "$failed"
+  if [[ -n $best ]]; then
+    printf '  %s推荐%s  %s · %s ms\n' "$GREEN$BOLD" "$PLAIN" "$best" "$best_ms"
+  fi
+  printf '  %s仅 3/3 通过的域名参与排名，按平均握手耗时升序排列。\n' "$DIM"
+  printf '  耗时为本服务器到目标站的连接及握手耗时，不代表客户端实际速度。%s\n' "$PLAIN"
 }
 
 sni_test() {
   local results N_SNI="" SNI_CONCURRENCY=${SNI_CONCURRENCY:-4}
   ui_title 'SNI 优选测试'
-  if ! command -v timeout >/dev/null || ! sni_now_ms >/dev/null; then
-    warn "域名优选需要 timeout 和毫秒计时支持，请安装 coreutils 或使用 Bash 5"
+  if ! has_gnu_timeout || ! sni_now_ms >/dev/null; then
+    warn "域名优选需要 GNU timeout（coreutils）和毫秒计时支持（Bash 5 或 GNU date）"
     return 0
   fi
   SNI_CONCURRENCY=$(sni_ask_concurrency) || { UI_SKIP_PAUSE=1; return 0; }
-  info "正在优选：每个域名测试 3 次，单次超时 2 秒（另有 1 秒强制结束宽限），并发数 $(sni_concurrency)..."
   if ! results=$(sni_scan); then
     warn "优选未完成，请稍后重试"
     return 0
@@ -211,12 +247,11 @@ pick_sni() { # -> PICKED；取消/输入结束时返回失败，调用者不保�
     case $mode in
       0) return 1 ;;
       1)
-        if ! command -v timeout >/dev/null || ! sni_now_ms >/dev/null; then
-          warn "域名优选需要 timeout 和毫秒计时支持，请安装 coreutils 或使用 Bash 5；可手动选择"
+        if ! has_gnu_timeout || ! sni_now_ms >/dev/null; then
+          warn "域名优选需要 GNU timeout（coreutils）和毫秒计时支持（Bash 5 或 GNU date）；可手动选择"
           mode=2; continue
         fi
         SNI_CONCURRENCY=$(sni_ask_concurrency) || return 1
-        info "正在优选：每个域名测试 3 次，单次超时 2 秒（另有 1 秒强制结束宽限），并发数 $(sni_concurrency)..."
         if ! results=$(sni_scan); then
           warn "优选未完成，可手动选择"; mode=2; continue
         fi

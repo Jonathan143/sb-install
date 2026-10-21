@@ -5,6 +5,27 @@ ROOT=$(mktemp -d) || exit 1
 trap 'rm -rf "$ROOT"' EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
+# BusyBox timeout being present must not suppress the GNU dependency install.
+(
+  detect_pkg() { PKG=apk; }
+  curl() { :; }; jq() { :; }; openssl() { :; }; tar() { :; }
+  ss() { :; }; qrencode() { :; }
+  timeout() {
+    [[ $1 == --version ]] || fail 'unexpected timeout invocation'
+    [[ -f $ROOT/gnu-installed ]] || { echo 'BusyBox timeout'; return 1; }
+    echo 'timeout (GNU coreutils) test'
+  }
+  pkg_install() {
+    [[ $* == 'ca-certificates coreutils' ]] || fail 'wrong timeout dependency'
+    touch "$ROOT/gnu-installed"
+  }
+  if has_gnu_timeout; then fail 'accepted BusyBox timeout'; fi
+  install_deps || fail 'GNU timeout installation'
+  has_gnu_timeout || fail 'GNU timeout not rechecked'
+  pkg_install() { fail 'reinstalled existing GNU timeout'; }
+  install_deps || fail 'existing GNU timeout rejected'
+) || exit 1
+
 # Validate handshake requirements and reject success-looking output on failure.
 (
   timeout() {
@@ -34,7 +55,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 ) || exit 1
 
 # Exercise the real timeout against a child that ignores TERM (Linux CI).
-if command -v timeout >/dev/null; then
+if has_gnu_timeout; then
   (
     mkdir -p "$ROOT/bin"
     cat > "$ROOT/bin/openssl" <<'STUB'
@@ -50,7 +71,7 @@ STUB
     ((SECONDS <= 6)) || fail 'hard timeout did not bound handshake'
   ) || exit 1
 else
-  echo 'SKIP: real hard-timeout integration requires timeout (runs in Linux CI)'
+  echo 'SKIP: real hard-timeout integration requires GNU timeout (runs in Linux CI)'
 fi
 
 # Measurements use successful rounds only, without promoting partial success.
@@ -107,7 +128,7 @@ for input in 0 q; do
 done
 if sni_ask_concurrency < /dev/null; then fail 'prompt EOF'; fi
 (
-  timeout() { :; }
+  timeout() { echo 'timeout (GNU coreutils) test'; }
   sni_now_ms() { echo 1000; }
   sni_scan() {
     echo "$SNI_CONCURRENCY" >> "$ROOT/standalone-scans"
@@ -168,7 +189,7 @@ run_pick() (
   SNI_LIST=(slow.example fast.example)
   N_SNI=slow.example
   PICKED=stale.example
-  timeout() { :; }
+  timeout() { echo 'timeout (GNU coreutils) test'; }
   sni_now_ms() { echo 1000; }
   sni_scan() {
     if [[ $scenario == retest ]]; then

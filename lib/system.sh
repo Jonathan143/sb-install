@@ -18,16 +18,25 @@ pkg_install() {
     *) err "未识别的包管理器，请手动安装: $*"; return 1 ;;
   esac
 }
+has_gnu_timeout() {
+  local version
+  version=$(LC_ALL=C timeout --version 2>/dev/null) || return 1
+  [[ $version == *'GNU coreutils'* ]]
+}
+
 install_deps() {
   local need=() c
   detect_pkg
   for c in curl jq openssl tar; do command -v "$c" >/dev/null || need+=("$c"); done
-  command -v timeout >/dev/null || need+=(coreutils)
+  has_gnu_timeout || need+=(coreutils)
   command -v ss >/dev/null || need+=("$([[ $PKG == dnf || $PKG == yum ]] && echo iproute || echo iproute2)")
   if ((${#need[@]})); then
     info "安装依赖: ${need[*]}"
     pkg_install ca-certificates "${need[@]}" >/dev/null 2>&1 || pkg_install "${need[@]}" || die "依赖安装失败"
   fi
+  # Discard a cached BusyBox executable after installing coreutils.
+  hash -r
+  has_gnu_timeout || die "需要 GNU timeout；Alpine 请执行 apk add --no-cache coreutils，并检查 PATH"
   command -v qrencode >/dev/null || pkg_install qrencode >/dev/null 2>&1 || true
 }
 
