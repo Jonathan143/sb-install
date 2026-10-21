@@ -25,6 +25,34 @@ RED=$'\033[31m'; GREEN=$'\033[32m'; CYAN=$'\033[36m'; PLAIN=$'\033[0m'
 main_menu < /dev/null > "$ROOT/menu" || fail "menu EOF"
 if LC_ALL=C grep -q $'\033' "$ROOT/menu"; then fail 'redirected output contains ANSI'; fi
 grep -q '节点管理' "$ROOT/menu" || fail 'missing sections'
+# Exercise the main menu: a back action must not consume an extra Enter.
+# Stub pause because redirected CI input is not a terminal.
+(
+  META_DIR="$ROOT/nodes" CERT_DIR="$ROOT/certs"
+  mkdir -p "$META_DIR"
+  touch "$META_DIR/1.env"
+  list_ids() { echo 1; }
+  list_nodes() { :; }
+  need_core() { :; }
+  meta_load() { N_ID=1 N_PROTO=reality N_NOTE=test N_LPORT=1234; }
+  snapshot() { fail 'back created snapshot'; }
+  pause() { echo PAUSED >> "$ROOT/pauses"; }
+  show_node() { echo SHOWN >> "$ROOT/shown"; }
+  for choice in 1 2 3 4 7 8 9; do
+    for back in 0 q Q; do
+      main_menu <<< "$choice
+$back
+0" > /dev/null || fail "menu navigation"
+    done
+  done
+  main_menu <<< $'3\n1\n0\n0' > /dev/null || fail "menu navigation"
+  [[ ! -e $ROOT/pauses ]] || fail 'back paused'
+  # A successful selection after returning must still pause to show its output.
+  main_menu <<< $'2\n0\n2\n1\n0' > /dev/null || fail "menu navigation"
+  [[ $(wc -l < "$ROOT/pauses") -eq 1 && -s $ROOT/shown ]] || fail 'result did not pause'
+  main_menu <<< $'2\n999\n0' > /dev/null || fail "menu navigation"
+  [[ $(wc -l < "$ROOT/pauses") -eq 2 ]] || fail 'error did not pause'
+)
 # Cancellation must occur before snapshots or persistent changes.
 select_node() { SEL_ID=1; }
 meta_load() { N_ID=1 N_PROTO=reality N_NOTE=test N_LPORT=1234; }

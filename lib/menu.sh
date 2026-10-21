@@ -26,7 +26,7 @@ EOF
 main_menu() {
   local RED GREEN YELLOW CYAN PLAIN BOLD DIM
   ui_colors 1
-  local c st installed
+  local c st installed UI_SKIP_PAUSE=0
   while true; do
     installed=$(sed -n 's/^SB_VERSION="\([0-9][0-9.]*\)"/\1/p' "$SB_CMD" 2>/dev/null | head -n1)
     if [[ -n $installed && $installed != "$SB_VERSION" ]]; then
@@ -44,6 +44,8 @@ main_menu() {
     ui_item 8 '证书管理'; ui_item 9 '更新内核 / 脚本'; ui_item 10 '卸载'
     printf '\n'; ui_item 0 '退出（也可输入 q）'
     c=$(ask_choice "请选择" 10) || return 0
+    # Explicit back actions set this flag in the current shell.
+    UI_SKIP_PAUSE=0
     case $c in
       1) add_node ;;
       2) if select_node ""; then show_node "$SEL_ID"; fi ;;
@@ -58,7 +60,7 @@ main_menu() {
       0|q) return ;;
       *) warn "无效选择" ;;
     esac
-    pause || return 0
+    [[ $UI_SKIP_PAUSE == 1 ]] || pause || return 0
   done
 }
 
@@ -67,5 +69,5 @@ update_menu() {
   ui_title '更新管理'
   ui_item 1 '更新 sing-box 内核'; ui_item 2 '更新 sb 脚本'; ui_item 0 '返回'
   c=$(ask_choice "请选择" 2) || return 0
-  case $c in 1) update_core ;; 2) update_script restart ;; esac
+  case $c in 1) update_core ;; 2) update_script restart ;; 0) UI_SKIP_PAUSE=1 ;; esac
 }

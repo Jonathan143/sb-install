@@ -15,7 +15,7 @@ cert_menu() {
   echo
   echo "  1) 强制续期某个域名（acme.sh）   0) 返回"
   c=$(ask_choice "请选择" 1 0) || return 0
-  [[ $c != 0 ]] || return 0
+  [[ $c != 0 ]] || { UI_SKIP_PAUSE=1; return 0; }
   if [[ $c == 1 ]]; then
     if [[ -x $ACME_SH ]]; then
       dom=$(ask_domain "域名") || return 1

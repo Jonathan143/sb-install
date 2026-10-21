@@ -52,6 +52,7 @@ service_menu() {
   ui_item 4 '开启开机自启'; ui_item 5 '关闭开机自启'; ui_item 0 '返回'
   c=$(ask_choice "请选择" 5) || return 0
   case $c in
+    0) UI_SKIP_PAUSE=1 ;;
     1) svc_cmd start ;; 2) svc_cmd stop ;; 3) svc_cmd restart ;;
     4) svc enable && info "已开启开机自启" ;; 5) svc disable && info "已关闭开机自启" ;;
   esac

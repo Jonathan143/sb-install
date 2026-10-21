@@ -9,7 +9,7 @@ select_node() { # [id] -> SEL_ID
     [[ -n $(list_ids) ]] || { info "暂无节点"; return 1; }
     list_nodes
     id=$(ask "请输入节点编号（0 返回）") || return 1
-    [[ $id != 0 && $id != q ]] || return 1
+    [[ $id != 0 && $id != q && $id != Q ]] || { UI_SKIP_PAUSE=1; return 1; }
   fi
   [[ $id =~ ^[0-9]+$ && -f $META_DIR/$id.env ]] || { err "节点 $id 不存在"; return 1; }
   SEL_ID=$id
@@ -39,7 +39,7 @@ add_node() {
   ui_item 5 "AnyTLS"
   ui_item 0 "返回"
   p=$(ask_choice "请选择" 5 1) || return 1
-  [[ $p != 0 ]] || return 0
+  [[ $p != 0 ]] || { UI_SKIP_PAUSE=1; return 0; }
   meta_reset
   N_ID=$(next_id); N_CREATED=$(date '+%F %T')
   case $p in
@@ -120,7 +120,7 @@ edit_node() {
   ui_item 8 "Multiplex 多路复用开关（VLESS）"
   ui_item 0 "返回"
   c=$(ask_choice "请选择" 8) || return 1
-  [[ $c != 0 ]] || return 0
+  [[ $c != 0 ]] || { UI_SKIP_PAUSE=1; return 0; }
   snapshot
   case $c in
     1) pick_port "$(proto_net)" "$N_ID" "$old_l" || return 1; N_LPORT=$PICKED
