@@ -67,7 +67,7 @@ curl -fsSL -o /usr/local/bin/sb ${GH_PROXY}https://github.com/Jonathan143/sb-ins
 | `sb update` | 更新 sb 脚本本身 |
 | `sb uninstall` | 卸载 |
 
-在主菜单选择「9 → 2」更新脚本成功后，按回车会直接重新运行新版 `sb`。使用 `sb update` 命令则在更新完成后退出。
+在主菜单选择「10 → 2」更新脚本成功后，按回车会直接重新运行新版 `sb`。使用 `sb update` 命令则在更新完成后退出。
 主菜单也会检查正在运行与磁盘安装的脚本版本；版本不一致时会显示两个版本，并提示按回车重新加载。已经运行的旧版脚本需先退出并重新运行一次，才能启用此检查。
 
 ## 协议与证书说明
@@ -89,6 +89,8 @@ curl -fsSL -o /usr/local/bin/sb ${GH_PROXY}https://github.com/Jonathan143/sb-ins
 - **WS + CDN**：如果要经 Cloudflare CDN，对外端口必须是 443、2053、2083、2087、2096、8443 之一。
 
 ### Reality SNI 域名优选
+
+主菜单选择「5 · SNI 优选测试」可独立测试内置候选域名，展示排名、平均握手耗时和成功率，不修改节点配置。
 
 新增 Reality 节点，或执行 `sb edit` 修改 Reality 节点的 SNI 时，默认进入「域名优选」，也可以直接选择手动输入。
 

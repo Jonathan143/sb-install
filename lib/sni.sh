@@ -84,8 +84,43 @@ sni_valid_domain() {
   done
 }
 
+sni_show_results() { # 已排序的 TSV 结果；仅展示，不修改节点
+  local ok ms domain state i=0 latency rank
+  echo "检测条件：TLS 1.3 + h2 + 证书有效；耗时为本服务器到目标站的连接及握手耗时。"
+  printf '  %-4s %-36s %-12s %-7s %s\n' '序号' '域名' '平均耗时' '成功率' '状态'
+  while IFS=$'\t' read -r ok ms domain state; do
+    rank="-"; latency="-"
+    ((ok == 0)) || latency="${ms} ms"
+    if ((ok == 3)); then
+      i=$((i + 1)); rank=$i
+      ((i != 1)) || state="推荐"
+    fi
+    [[ $domain != "${N_SNI:-}" ]] || state="$state / 当前"
+    printf '  %-4s %-36s %-12s %-7s %s\n' "$rank" "$domain" "$latency" "$ok/3" "$state"
+  done <<< "$1"
+  echo "仅 3/3 通过的域名参与排名，按平均耗时升序排列；此结果不代表客户端实际速度。"
+}
+
+sni_test() {
+  local results N_SNI=""
+  ui_title 'SNI 优选测试'
+  if ! command -v timeout >/dev/null || ! sni_now_ms >/dev/null; then
+    warn "域名优选需要 timeout 和毫秒计时支持，请安装 coreutils 或使用 Bash 5"
+    return 0
+  fi
+  info "正在优选：每个域名测试 3 次，单次超时 2 秒，最多 4 个域名并行..."
+  if ! results=$(sni_scan); then
+    warn "优选未完成，请稍后重试"
+    return 0
+  fi
+  sni_show_results "$results"
+  if ! awk -F '\t' '$1 == 3 { found=1 } END { exit !found }' <<< "$results"; then
+    warn "没有稳定通过的域名，请稍后重试"
+  fi
+}
+
 pick_sni() { # -> PICKED；取消/输入结束时返回失败，调用者不保存配置
-  local mode in cand i results ok ms domain state def latency
+  local mode in cand i results ok ms domain state def
   local ranked=()
   PICKED=""
   echo "Reality SNI: 1) 域名优选（推荐）  2) 手动选择/输入  0) 取消"
@@ -104,19 +139,10 @@ pick_sni() { # -> PICKED；取消/输入结束时返回失败，调用者不保�
           warn "优选未完成，可手动选择"; mode=2; continue
         fi
         ranked=()
-        echo "检测条件：TLS 1.3 + h2 + 证书有效；耗时为本服务器到目标站的连接及握手耗时。"
-        printf '  %-4s %-36s %-12s %-7s %s\n' '序号' '域名' '平均耗时' '成功率' '状态'
+        sni_show_results "$results"
         while IFS=$'\t' read -r ok ms domain state; do
-          i="-"; latency="-"
-          ((ok == 0)) || latency="${ms} ms"
-          if ((ok == 3)); then
-            ranked+=("$domain"); i=${#ranked[@]}
-            ((i != 1)) || state="推荐"
-          fi
-          [[ $domain != "${N_SNI:-}" ]] || state="$state / 当前"
-          printf '  %-4s %-36s %-12s %-7s %s\n' "$i" "$domain" "$latency" "$ok/3" "$state"
+          if ((ok == 3)); then ranked+=("$domain"); fi
         done <<< "$results"
-        echo "仅 3/3 通过的域名参与排名，按平均耗时升序排列；此结果不代表客户端实际速度。"
         def=""; ((${#ranked[@]} == 0)) || def=1
         [[ -n $def ]] || warn "没有稳定通过的域名；可重测或手动输入，不会自动使用失败域名"
         while true; do

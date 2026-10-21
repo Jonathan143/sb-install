@@ -38,7 +38,7 @@ grep -q '节点管理' "$ROOT/menu" || fail 'missing sections'
   snapshot() { fail 'back created snapshot'; }
   pause() { echo PAUSED >> "$ROOT/pauses"; }
   show_node() { echo SHOWN >> "$ROOT/shown"; }
-  for choice in 1 2 3 4 7 8 9; do
+  for choice in 1 2 3 4 8 9 10; do
     for back in 0 q Q; do
       main_menu <<< "$choice
 $back

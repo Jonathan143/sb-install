@@ -39,11 +39,12 @@ main_menu() {
     ui_section '节点管理'
     ui_item 1 '新增节点'; ui_item 2 '查看节点 / 分享配置'
     ui_item 3 '修改节点'; ui_item 4 '删除节点'
+    ui_item 5 'SNI 优选测试'
     ui_section '运行与维护'
-    ui_item 5 '运行状态'; ui_item 6 '查看日志'; ui_item 7 '服务控制'
-    ui_item 8 '证书管理'; ui_item 9 '更新内核 / 脚本'; ui_item 10 '卸载'
+    ui_item 6 '运行状态'; ui_item 7 '查看日志'; ui_item 8 '服务控制'
+    ui_item 9 '证书管理'; ui_item 10 '更新内核 / 脚本'; ui_item 11 '卸载'
     printf '\n'; ui_item 0 '退出（也可输入 q）'
-    c=$(ask_choice "请选择" 10) || return 0
+    c=$(ask_choice "请选择" 11) || return 0
     # Explicit back actions set this flag in the current shell.
     UI_SKIP_PAUSE=0
     case $c in
@@ -51,12 +52,13 @@ main_menu() {
       2) if select_node ""; then show_node "$SEL_ID"; fi ;;
       3) edit_node ;;
       4) delete_node ;;
-      5) show_status ;;
-      6) show_log ;;
-      7) service_menu ;;
-      8) cert_menu ;;
-      9) update_menu ;;
-      10) uninstall_all; [[ -x $SB_CMD ]] || return ;;
+      5) sni_test ;;
+      6) show_status ;;
+      7) show_log ;;
+      8) service_menu ;;
+      9) cert_menu ;;
+      10) update_menu ;;
+      11) uninstall_all; [[ -x $SB_CMD ]] || return ;;
       0|q) return ;;
       *) warn "无效选择" ;;
     esac
