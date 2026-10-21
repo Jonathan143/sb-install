@@ -15,22 +15,25 @@ sni_now_ms() {
 }
 
 check_sni() { # 域名 [超时秒数]；SNI_FAILURE 返回失败原因
-  local out rc
+  local output line rc tls=0 verified=0 h2=0
   SNI_FAILURE="连接/TLS/证书失败"
-  # 不发送 HTTP 请求，避免将目标站的 403/404 当作 TLS 失败。
-  # HTTP/2 servers may send binary frames after the handshake. Strip NUL bytes
-  # before Bash captures stdout, while preserving timeout/OpenSSL failures.
-  if out=$(
-    set -o pipefail
-    LC_ALL=C timeout "${2:-8}" openssl s_client -connect "$1:443" \
-      -servername "$1" -tls1_3 -alpn h2 -verify_hostname "$1" \
-      -verify_return_error </dev/null 2>/dev/null | LC_ALL=C tr -d '\000'
-  ); then rc=0; else rc=$?; fi
+  output=$(mktemp "${SNI_SCAN_TMP:-${TMPDIR:-/tmp}}/handshake.XXXXXX") || { SNI_FAILURE="无法创建检测临时文件"; return 1; }
+  # Capture to a file: avoid a command-substitution shell and concurrent tr.
+  # BusyBox and GNU timeout both support a hard-kill grace period.
+  if LC_ALL=C timeout -k 1 "${2:-8}" openssl s_client -connect "$1:443" \
+    -servername "$1" -tls1_3 -alpn h2 -verify_hostname "$1" \
+    -verify_return_error </dev/null >"$output" 2>/dev/null; then rc=0; else rc=$?; fi
+  if ((rc == 0)); then
+    while IFS= read -r line || [[ -n $line ]]; do
+      [[ $line != *TLSv1.3* ]] || tls=1
+      [[ $line != *'Verify return code: 0 (ok)'* ]] || verified=1
+      [[ $line != *'ALPN protocol: h2'* ]] || h2=1
+    done < "$output"
+  fi
+  rm -f "$output"
   if ((rc == 124 || rc == 137 || rc == 143)); then SNI_FAILURE="超时"; return 1; fi
-  ((rc == 0)) || return 1
-  [[ $out == *TLSv1.3* ]] || return 1
-  [[ $out == *'Verify return code: 0 (ok)'* ]] || return 1
-  [[ $out == *'ALPN protocol: h2'* ]] || { SNI_FAILURE="不支持 h2"; return 1; }
+  ((rc == 0 && tls && verified)) || return 1
+  ((h2)) || { SNI_FAILURE="不支持 h2"; return 1; }
   SNI_FAILURE=""
 }
 
@@ -48,22 +51,75 @@ sni_measure() { # 域名 -> 成功次数、平均毫秒、域名、状态（TSV�
   done
   ((ok == 0)) || avg=$(((sum + ok / 2) / ok))
   if ((ok == 3)); then reason="通过"; elif ((ok > 0)); then reason="不稳定 ($reason)"; fi
+  printf '  %s：%s，成功 %s/3，平均 %s ms\n' "$domain" "$reason" "$ok" "$avg" >&2
   printf '%s\t%s\t%s\t%s\n' "$ok" "$avg" "$domain" "$reason"
 }
 
 sni_concurrency() {
-  # A probe starts several processes; default to serial on small VPS/containers.
-  case ${SNI_CONCURRENCY:-1} in
-    [1-4]) printf '%s\n' "${SNI_CONCURRENCY:-1}" ;;
-    *) printf '1\n' ;;
+  # Keep environment overrides within the supported range.
+  case ${SNI_CONCURRENCY:-4} in
+    [1-4]) printf '%s\n' "${SNI_CONCURRENCY:-4}" ;;
+    *) printf '4\n' ;;
   esac
 }
 
-sni_scan() ( # 子 shell 隔离临时目录与信号处理；默认串行
-  local tmp domain seen pid i=0 failed=0 concurrency
+sni_ask_concurrency() {
+  local value
+  value=$(ask_choice '并发数（1–4，0/q 取消）' 4 "$(sni_concurrency)") || return 1
+  [[ $value != 0 ]] || return 1
+  printf '%s\n' "$value"
+}
+
+sni_pid_budget() { # cgroup v2 PID headroom, including ancestor limits
+  local path="" hierarchy controllers entry dir current limit available
+  SNI_PID_AVAILABLE=""
+  if [[ -r /proc/self/cgroup ]]; then
+    while IFS=: read -r hierarchy controllers entry; do
+      [[ $hierarchy != 0 ]] || path=$entry
+    done < /proc/self/cgroup
+  fi
+  dir="/sys/fs/cgroup${path%/}"
+  while [[ $dir == /sys/fs/cgroup* ]]; do
+    if [[ -r $dir/pids.max && -r $dir/pids.current ]]; then
+      IFS= read -r limit < "$dir/pids.max"
+      IFS= read -r current < "$dir/pids.current"
+      if [[ $limit =~ ^[0-9]+$ && $current =~ ^[0-9]+$ ]]; then
+        available=$((limit - current))
+        if [[ -z $SNI_PID_AVAILABLE ]] || ((available < SNI_PID_AVAILABLE)); then
+          SNI_PID_AVAILABLE=$available
+        fi
+      fi
+    fi
+    [[ $dir != /sys/fs/cgroup ]] || break
+    dir=${dir%/*}
+  done
+}
+
+sni_limit_concurrency() {
+  local capacity
+  sni_pid_budget
+  SNI_EFFECTIVE_CONCURRENCY=$1
+  [[ -n $SNI_PID_AVAILABLE ]] || return 0
+  # Reserve room for bookkeeping; each worker also needs timeout/watchdog/OpenSSL.
+  capacity=$(((SNI_PID_AVAILABLE - 4) / 5))
+  if ((capacity < 1)); then
+    warn "容器剩余进程额度不足（剩余 ${SNI_PID_AVAILABLE}），已停止测试；请先结束旧测试或提高容器 PID 上限"
+    return 1
+  fi
+  if ((capacity < SNI_EFFECTIVE_CONCURRENCY)); then
+    SNI_EFFECTIVE_CONCURRENCY=$capacity
+    warn "容器剩余进程额度为 ${SNI_PID_AVAILABLE}，并发数已从 $1 降为 $capacity"
+  fi
+}
+
+sni_scan() ( # 子 shell 隔离临时目录与信号处理；并发数 1–4
+  local tmp domain seen pid i=0 failed=0 concurrency SNI_SCAN_TMP
   local pids=() domains=()
   concurrency=$(sni_concurrency)
+  sni_limit_concurrency "$concurrency" || return 1
+  concurrency=$SNI_EFFECTIVE_CONCURRENCY
   tmp=$(mktemp -d) || return 1
+  SNI_SCAN_TMP=$tmp
   trap 'for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || :; done; wait; rm -rf "$tmp"' EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
@@ -74,6 +130,9 @@ sni_scan() ( # 子 shell 隔离临时目录与信号处理；默认串行
       [[ $seen != "$domain" ]] || continue 2
     done
     domains+=("$domain")
+  done
+  for domain in "${domains[@]}"; do
+    printf '  [%s/%s] 检测 %s\n' "$((i + 1))" "${#domains[@]}" "$domain" >&2
     if ((concurrency == 1)); then
       sni_measure "$domain" > "$tmp/$i" || return 1
     else
@@ -122,13 +181,14 @@ sni_show_results() { # 已排序的 TSV 结果；仅展示，不修改节点
 }
 
 sni_test() {
-  local results N_SNI=""
+  local results N_SNI="" SNI_CONCURRENCY=${SNI_CONCURRENCY:-4}
   ui_title 'SNI 优选测试'
   if ! command -v timeout >/dev/null || ! sni_now_ms >/dev/null; then
     warn "域名优选需要 timeout 和毫秒计时支持，请安装 coreutils 或使用 Bash 5"
     return 0
   fi
-  info "正在优选：每个域名测试 3 次，单次超时 2 秒，并发数 $(sni_concurrency)（默认串行）..."
+  SNI_CONCURRENCY=$(sni_ask_concurrency) || { UI_SKIP_PAUSE=1; return 0; }
+  info "正在优选：每个域名测试 3 次，单次超时 2 秒（另有 1 秒强制结束宽限），并发数 $(sni_concurrency)..."
   if ! results=$(sni_scan); then
     warn "优选未完成，请稍后重试"
     return 0
@@ -141,6 +201,7 @@ sni_test() {
 
 pick_sni() { # -> PICKED；取消/输入结束时返回失败，调用者不保存配置
   local mode in cand i results ok ms domain state def
+  local SNI_CONCURRENCY=${SNI_CONCURRENCY:-4}
   local ranked=()
   PICKED=""
   echo "Reality SNI: 1) 域名优选（推荐）  2) 手动选择/输入  0) 取消"
@@ -154,7 +215,8 @@ pick_sni() { # -> PICKED；取消/输入结束时返回失败，调用者不保�
           warn "域名优选需要 timeout 和毫秒计时支持，请安装 coreutils 或使用 Bash 5；可手动选择"
           mode=2; continue
         fi
-        info "正在优选：每个域名测试 3 次，单次超时 2 秒，并发数 $(sni_concurrency)（默认串行）..."
+        SNI_CONCURRENCY=$(sni_ask_concurrency) || return 1
+        info "正在优选：每个域名测试 3 次，单次超时 2 秒（另有 1 秒强制结束宽限），并发数 $(sni_concurrency)..."
         if ! results=$(sni_scan); then
           warn "优选未完成，可手动选择"; mode=2; continue
         fi

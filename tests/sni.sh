@@ -8,6 +8,8 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 # Validate handshake requirements and reject success-looking output on failure.
 (
   timeout() {
+    [[ $1 == -k && $2 == 1 ]] || fail 'missing hard timeout'
+    shift 2
     [[ $1 == 2 || $1 == 8 ]] || fail 'wrong timeout'
     shift; "$@"
   }
@@ -30,6 +32,26 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
     case $MODE in timeout|killed|terminated) [[ $SNI_FAILURE == 超时 ]] || fail 'timeout status lost in pipeline' ;; esac
   done
 ) || exit 1
+
+# Exercise the real timeout against a child that ignores TERM (Linux CI).
+if command -v timeout >/dev/null; then
+  (
+    mkdir -p "$ROOT/bin"
+    cat > "$ROOT/bin/openssl" <<'STUB'
+#!/bin/sh
+trap '' TERM
+exec sleep 30
+STUB
+    chmod +x "$ROOT/bin/openssl"
+    PATH="$ROOT/bin:$PATH"
+    SECONDS=0
+    if check_sni test.example 1; then fail 'hanging handshake accepted'; fi
+    [[ $SNI_FAILURE == 超时 ]] || fail 'hard timeout status'
+    ((SECONDS <= 6)) || fail 'hard timeout did not bound handshake'
+  ) || exit 1
+else
+  echo 'SKIP: real hard-timeout integration requires timeout (runs in Linux CI)'
+fi
 
 # Measurements use successful rounds only, without promoting partial success.
 (
@@ -58,12 +80,46 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
   [[ $result == $'0\t0\ttest.example\t超时' ]] || fail "failed measurement: $result"
 ) || exit 1
 
+# A small cgroup must downgrade or stop before spawning probe workers.
+(
+  sni_pid_budget() { SNI_PID_AVAILABLE=$available; }
+  available=24; sni_limit_concurrency 4 || fail 'ample budget'
+  [[ $SNI_EFFECTIVE_CONCURRENCY == 4 ]] || fail 'unnecessary downgrade'
+  available=12; sni_limit_concurrency 4 || fail 'serial budget'
+  [[ $SNI_EFFECTIVE_CONCURRENCY == 1 ]] || fail 'missing downgrade'
+  available=4
+  if sni_limit_concurrency 1; then fail 'exhausted budget accepted'; fi
+  sni_measure() { fail 'exhausted scan started worker'; }
+  if sni_scan; then fail 'exhausted scan started'; fi
+) || exit 1
+
 # Both serial and parallel collection deduplicate and include the current SNI.
 unset SNI_CONCURRENCY
-[[ $(sni_concurrency) == 1 ]] || fail 'default must be serial'
+[[ $(sni_concurrency) == 4 ]] || fail 'default concurrency'
 for invalid in 0 5 -1 bogus; do
-  [[ $(SNI_CONCURRENCY=$invalid sni_concurrency) == 1 ]] || fail 'invalid concurrency'
+  [[ $(SNI_CONCURRENCY=$invalid sni_concurrency) == 4 ]] || fail 'invalid concurrency'
 done
+# Prompt validation, default, cancellation, and EOF must happen before scanning.
+[[ $(sni_ask_concurrency <<< '') == 4 ]] || fail 'prompt default'
+[[ $(sni_ask_concurrency <<< $'5\nbad\n2') == 2 ]] || fail 'prompt validation'
+for input in 0 q; do
+  if sni_ask_concurrency <<< "$input"; then fail 'prompt cancellation'; fi
+done
+if sni_ask_concurrency < /dev/null; then fail 'prompt EOF'; fi
+(
+  timeout() { :; }
+  sni_now_ms() { echo 1000; }
+  sni_scan() {
+    echo "$SNI_CONCURRENCY" >> "$ROOT/standalone-scans"
+    printf '3\t20\tfast.example\t通过\n'
+  }
+  sni_test <<< '' > /dev/null
+  sni_test <<< 2 > /dev/null
+  sni_test <<< q > /dev/null
+  [[ $UI_SKIP_PAUSE == 1 ]] || fail 'cancel paused'
+  sni_test < /dev/null > /dev/null
+  [[ $(cat "$ROOT/standalone-scans") == $'4\n2' ]] || fail 'standalone prompt dispatch'
+) || exit 1
 for concurrency in 1 4; do
 (
   SNI_CONCURRENCY=$concurrency
@@ -115,6 +171,11 @@ run_pick() (
   timeout() { :; }
   sni_now_ms() { echo 1000; }
   sni_scan() {
+    if [[ $scenario == retest ]]; then
+      [[ $SNI_CONCURRENCY == 2 ]] || fail 'retest lost selected concurrency'
+    else
+      [[ $SNI_CONCURRENCY == 4 ]] || fail 'picker default concurrency'
+    fi
     echo scan >> "$ROOT/scans"
     if [[ $scenario == all-failed ]]; then
       printf '0\t0\tfailed.example\t超时\n'
@@ -129,15 +190,15 @@ run_pick() (
   }
   rm -f "$ROOT/scans" "$ROOT/manual"
   case $scenario in
-    default) input=$'\n\n' ;;
-    second) input=$'1\n02\n' ;;
-    invalid) input=$'1\n3\n9999999999999999999\n08\n1\n' ;;
-    retest) input=$'1\nr\n1\n' ;;
+    default) input=$'\n\n\n' ;;
+    second) input=$'1\n\n02\n' ;;
+    invalid) input=$'1\n\n3\n9999999999999999999\n08\n1\n' ;;
+    retest) input=$'1\n2\nr\n\n1\n' ;;
     manual) input=$'2\nhttps://example.com\nCUSTOM.EXAMPLE\n' ;;
     manual-index) input=$'2\n02\n' ;;
     manual-failed) input=$'2\ncustom.example\nn\n0\n' ;;
     manual-override) input=$'2\ncustom.example\ny\n' ;;
-    all-failed) input=$'1\n\n0\n' ;;
+    all-failed) input=$'1\n\n\n0\n' ;;
     cancel) input=$'0\n' ;;
     eof) input='' ;;
   esac
