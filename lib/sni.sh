@@ -51,22 +51,42 @@ sni_measure() { # 域名 -> 成功次数、平均毫秒、域名、状态（TSV�
   printf '%s\t%s\t%s\t%s\n' "$ok" "$avg" "$domain" "$reason"
 }
 
-sni_scan() ( # 子 shell 隔离临时目录与信号处理；最多 4 个域名并行
-  local tmp domain pid i=0 failed=0
-  local pids=()
+sni_concurrency() {
+  # A probe starts several processes; default to serial on small VPS/containers.
+  case ${SNI_CONCURRENCY:-1} in
+    [1-4]) printf '%s\n' "${SNI_CONCURRENCY:-1}" ;;
+    *) printf '1\n' ;;
+  esac
+}
+
+sni_scan() ( # 子 shell 隔离临时目录与信号处理；默认串行
+  local tmp domain seen pid i=0 failed=0 concurrency
+  local pids=() domains=()
+  concurrency=$(sni_concurrency)
   tmp=$(mktemp -d) || return 1
   trap 'for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || :; done; wait; rm -rf "$tmp"' EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
-  while IFS= read -r domain; do
+  # Deduplicate with Bash builtins, without a process substitution/awk pipeline.
+  for domain in "${SNI_LIST[@]}" "${N_SNI:-}"; do
     [[ -n $domain ]] || continue
-    sni_measure "$domain" > "$tmp/$i" &
-    pids+=("$!"); i=$((i + 1))
-    if ((${#pids[@]} == 4)); then
-      for pid in "${pids[@]}"; do wait "$pid" || failed=1; done
-      pids=()
+    for seen in "${domains[@]}"; do
+      [[ $seen != "$domain" ]] || continue 2
+    done
+    domains+=("$domain")
+    if ((concurrency == 1)); then
+      sni_measure "$domain" > "$tmp/$i" || return 1
+    else
+      sni_measure "$domain" > "$tmp/$i" &
+      pids+=("$!")
+      if ((${#pids[@]} == concurrency)); then
+        for pid in "${pids[@]}"; do wait "$pid" || failed=1; done
+        pids=()
+        ((failed == 0)) || return 1
+      fi
     fi
-  done < <(printf '%s\n' "${SNI_LIST[@]}" "${N_SNI:-}" | awk 'NF && !seen[$0]++')
+    i=$((i + 1))
+  done
   for pid in "${pids[@]}"; do wait "$pid" || failed=1; done
   pids=()
   ((failed == 0 && i > 0)) || return 1
@@ -108,7 +128,7 @@ sni_test() {
     warn "域名优选需要 timeout 和毫秒计时支持，请安装 coreutils 或使用 Bash 5"
     return 0
   fi
-  info "正在优选：每个域名测试 3 次，单次超时 2 秒，最多 4 个域名并行..."
+  info "正在优选：每个域名测试 3 次，单次超时 2 秒，并发数 $(sni_concurrency)（默认串行）..."
   if ! results=$(sni_scan); then
     warn "优选未完成，请稍后重试"
     return 0
@@ -134,7 +154,7 @@ pick_sni() { # -> PICKED；取消/输入结束时返回失败，调用者不保�
           warn "域名优选需要 timeout 和毫秒计时支持，请安装 coreutils 或使用 Bash 5；可手动选择"
           mode=2; continue
         fi
-        info "正在优选：每个域名测试 3 次，单次超时 2 秒，最多 4 个域名并行..."
+        info "正在优选：每个域名测试 3 次，单次超时 2 秒，并发数 $(sni_concurrency)（默认串行）..."
         if ! results=$(sni_scan); then
           warn "优选未完成，可手动选择"; mode=2; continue
         fi

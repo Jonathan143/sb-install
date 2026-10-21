@@ -58,12 +58,20 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
   [[ $result == $'0\t0\ttest.example\t超时' ]] || fail "failed measurement: $result"
 ) || exit 1
 
-# Real background collection/sort: deduplicate and include the current SNI.
+# Both serial and parallel collection deduplicate and include the current SNI.
+unset SNI_CONCURRENCY
+[[ $(sni_concurrency) == 1 ]] || fail 'default must be serial'
+for invalid in 0 5 -1 bogus; do
+  [[ $(SNI_CONCURRENCY=$invalid sni_concurrency) == 1 ]] || fail 'invalid concurrency'
+done
+for concurrency in 1 4; do
 (
+  SNI_CONCURRENCY=$concurrency
   SNI_LIST=(slow.example partial.example failed.example fast.example slow.example)
   N_SNI=current.example
   sni_measure() {
     echo "$1" >> "$ROOT/probed"
+    echo "$BASH_SUBSHELL" >> "$ROOT/workers"
     case $1 in
       slow.example) printf '3\t90\t%s\t通过\n' "$1" ;;
       fast.example|current.example) printf '3\t20\t%s\t通过\n' "$1" ;;
@@ -73,16 +81,23 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
   }
   TMPDIR="$ROOT"
   before=$(ls -A "$ROOT")
+  expected_depth=$((BASH_SUBSHELL + 2))
+  ((concurrency == 1)) || expected_depth=$((expected_depth + 1))
   result=$(sni_scan) || fail 'scan failed'
   order=$(printf '%s\n' "$result" | cut -f3 | tr '\n' ' ')
   [[ $order == 'current.example fast.example slow.example partial.example failed.example ' ]] || fail "ranking: $order"
   [[ $(wc -l < "$ROOT/probed") -eq 5 ]] || fail 'missing domain or duplicate probe'
-  rm "$ROOT/probed"
+  [[ $(sort -u "$ROOT/workers") == "$expected_depth" ]] || fail 'unexpected worker subshell depth'
+  rm "$ROOT/probed" "$ROOT/workers"
   [[ $(ls -A "$ROOT") == "$before" ]] || fail 'scan left temporary files'
-  sni_measure() { return 1; }
+  sni_measure() { echo failed >> "$ROOT/failed-workers"; return 1; }
   if sni_scan; then fail 'worker failure ignored'; fi
+  [[ $(wc -l < "$ROOT/failed-workers") -eq $concurrency ]] || fail 'scan continued after worker failure'
+  rm "$ROOT/failed-workers"
   [[ $(ls -A "$ROOT") == "$before" ]] || fail 'failed scan left temporary files'
 ) || exit 1
+
+done
 
 for domain in www.example.com EXAMPLE.com a-b.example; do
   sni_valid_domain "$domain" || fail "valid domain: $domain"
