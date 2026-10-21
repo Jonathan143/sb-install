@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Development entry point. Deploy the standalone artifact from scripts/build.sh.
-SB_VERSION="1.2.4"
+SB_VERSION="1.2.5"
 SB_ENTRY=${BASH_SOURCE[0]}
 SB_SOURCE_DIR=$(cd -- "$(dirname -- "$SB_ENTRY")" && pwd) || { return 1 2>/dev/null || exit 1; }
 SB_ENTRY="$SB_SOURCE_DIR/$(basename -- "$SB_ENTRY")"
