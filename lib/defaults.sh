@@ -19,9 +19,10 @@ ACME_SH="$ACME_HOME/acme.sh"
 ACME_SERVER="https://acme-v02.api.letsencrypt.org/directory"
 
 SNI_LIST=(
-  addons.mozilla.org www.cloudflare.com dl-cdn.alpinelinux.org www.amazon.com
-  aws.amazon.com www.samsung.com www.nvidia.com www.intel.com
-  www.sony.com dl.google.com pypi.org
+  addons.mozilla.org dl-cdn.alpinelinux.org www.python.org pypi.org
+  www.samsung.com www.nvidia.com www.intel.com www.sony.com
+  www.visa.com www.mastercard.com www.paypal.com www.stanford.edu
+  www.lovelive-anime.jp www.cathaypacific.com www.singaporeair.com
 )
 
 NODE_VARS=(N_ID N_PROTO N_LPORT N_PPORT N_HOST N_DOMAIN N_SNI N_UUID N_PASS N_FLOW N_MUX
