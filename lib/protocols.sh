@@ -3,6 +3,52 @@
 #---------------------------------------------------------------------
 # 生成服务端配置
 #---------------------------------------------------------------------
+generate_reality_keys() {
+  local keys
+  keys=$("$SB_BIN" generate reality-keypair) || { err "生成密钥失败"; return 1; }
+  N_PRIV=$(awk '/PrivateKey/{print $2}' <<<"$keys")
+  N_PBK=$(awk '/PublicKey/{print $2}' <<<"$keys")
+  [[ -n $N_PRIV && -n $N_PBK ]] || { err "Reality 密钥输出无效"; return 1; }
+  N_SID=$(openssl rand -hex 8)
+}
+
+pick_ss_method() {
+  local c
+  ui_title "Shadowsocks · 加密方式"
+  ui_item 1 "chacha20-ietf-poly1305（默认，兼容优先）"
+  ui_item 2 "aes-128-gcm"
+  ui_item 3 "aes-256-gcm"
+  ui_item 4 "2022-blake3-aes-128-gcm（需客户端支持 SS2022）"
+  ui_item 0 "返回"
+  c=$(ask_choice "选择加密方式" 4 1) || return 1
+  case $c in
+    1) N_METHOD=chacha20-ietf-poly1305 ;;
+    2) N_METHOD=aes-128-gcm ;;
+    3) N_METHOD=aes-256-gcm ;;
+    4) N_METHOD=2022-blake3-aes-128-gcm ;;
+    *) return 1 ;;
+  esac
+}
+
+generate_ss_password() {
+  if [[ $N_METHOD == 2022-blake3-aes-128-gcm ]]; then
+    N_PASS=$(openssl rand -base64 16) || return 1
+  else
+    N_PASS=$(rand_str 24) || return 1
+  fi
+}
+
+validate_ss() {
+  case $N_METHOD in
+    chacha20-ietf-poly1305|aes-128-gcm|aes-256-gcm)
+      [[ -n $N_PASS ]] || { err "Shadowsocks 密码不能为空"; return 1; } ;;
+    2022-blake3-aes-128-gcm)
+      # A canonical Base64 encoding of exactly 16 random bytes.
+      [[ $N_PASS =~ ^[A-Za-z0-9+/]{21}[AQgw]==$ ]] || { err "SS2022 需要 16 字节的 Base64 密钥"; return 1; } ;;
+    *) err "不支持的 Shadowsocks 加密方式: $N_METHOD"; return 1 ;;
+  esac
+}
+
 tls_server_json() { # alpn(可空)
   if [[ $N_CERTMODE == builtin ]]; then
     jq -n --arg d "$N_DOMAIN" --arg email "$ACME_EMAIL" --arg v "$N_ACMEV" --arg alpn "$1" '
@@ -73,6 +119,17 @@ write_node_conf() {
   mux=$(node_multiplex_json inbound) || return 1
   listen=$(listen_addr); f=$(conf_file); tmp=$(mktemp)
   case $N_PROTO in
+    anytls-reality)
+      jq -n --arg tag "$tag" --arg listen "$listen" --argjson port "$N_LPORT" --arg pw "$N_PASS" \
+        --arg sni "$N_SNI" --arg priv "$N_PRIV" --arg sid "$N_SID" '
+        {inbounds:[{type:"anytls",tag:$tag,listen:$listen,listen_port:$port,users:[{password:$pw}],
+          tls:{enabled:true,server_name:$sni,
+               reality:{enabled:true,handshake:{server:$sni,server_port:443},private_key:$priv,short_id:[$sid]}}}]}' > "$tmp" ;;
+    ss)
+      validate_ss || { rm -f "$tmp"; return 1; }
+      jq -n --arg tag "$tag" --arg listen "$listen" --argjson port "$N_LPORT" \
+        --arg method "$N_METHOD" --arg pw "$N_PASS" '
+        {inbounds:[{type:"shadowsocks",tag:$tag,listen:$listen,listen_port:$port,method:$method,password:$pw}]}' > "$tmp" ;;
     reality)
       jq -n --arg tag "$tag" --arg listen "$listen" --argjson port "$N_LPORT" --arg uuid "$N_UUID" \
         --arg flow "$N_FLOW" --arg sni "$N_SNI" --arg priv "$N_PRIV" --arg sid "$N_SID" --argjson mux "$mux" '

@@ -3,9 +3,14 @@
 #---------------------------------------------------------------------
 # 端口 / 防火墙
 #---------------------------------------------------------------------
-port_in_use() { # port tcp|udp
+port_in_use() { # port tcp|udp|both; either socket counts as occupied
+  if [[ $2 == both ]]; then port_in_use "$1" tcp || port_in_use "$1" udp; return $?; fi
   local flag=-ltn; [[ $2 == udp ]] && flag=-lun
   ss -H $flag 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]$1\$"
+}
+port_listening() { # both requires TCP and UDP listeners
+  if [[ $2 == both ]]; then port_in_use "$1" tcp && port_in_use "$1" udp; return $?; fi
+  port_in_use "$1" "$2"
 }
 node_port_used() { # port [跳过的节点ID]
   local id
@@ -15,7 +20,7 @@ node_port_used() { # port [跳过的节点ID]
   done
   return 1
 }
-rand_port() { # tcp|udp 跳过ID
+rand_port() { # tcp|udp|both 跳过ID
   local i p
   for i in $(seq 1 300); do
     p=$((PORT_MIN + (RANDOM * 32768 + RANDOM) % (PORT_MAX - PORT_MIN + 1)))
@@ -23,7 +28,7 @@ rand_port() { # tcp|udp 跳过ID
   done
   return 1
 }
-# pick_port tcp|udp [跳过ID] [当前端口] -> PICKED
+# pick_port tcp|udp|both [跳过ID] [当前端口] -> PICKED
 pick_port() {
   local net=$1 skip=${2:-} cur=${3:-} in p
   while true; do
@@ -59,7 +64,8 @@ ask_pub_port() { # 默认值
   done
 }
 
-fw_open() { # port tcp|udp
+fw_open() { # port tcp|udp|both
+  if [[ $2 == both ]]; then fw_open "$1" tcp; fw_open "$1" udp; return $?; fi
   if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
     ufw allow "$1/$2" >/dev/null && info "ufw 已放行 $1/$2"
   elif command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then
@@ -71,6 +77,7 @@ fw_open() { # port tcp|udp
   return 0
 }
 fw_close() {
+  if [[ $2 == both ]]; then fw_close "$1" tcp; fw_close "$1" udp; return $?; fi
   if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
     ufw delete allow "$1/$2" >/dev/null 2>&1
   elif command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then

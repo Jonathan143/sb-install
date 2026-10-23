@@ -4,7 +4,7 @@
 
 ## 特性
 
-- **支持协议**：VLESS+Reality、VLESS+WS+TLS、Hysteria2、TUIC v5、AnyTLS
+- **支持协议**：VLESS+Reality、VLESS+WS+TLS、Hysteria2、TUIC v5、AnyTLS、AnyTLS+Reality、Shadowsocks
 - **端口**：自定义，默认在 20000-60000 随机；监听端口与对外端口分开设置，适配 NAT 小鸡
 - **Reality**：Flow（`xtls-rprx-vision`）可选开启或关闭；SNI 支持多轮并发测速优选，展示平均握手耗时与成功率，按排名选择或手动输入，并检测 TLS 1.3、h2 和证书有效性
 - **多路复用**：VLESS+Reality / VLESS+WS+TLS 可开启 multiplex，自动生成服务端和 sing-box 客户端配置，并显示 mihomo `smux` 配置片段；与 Reality Flow 互斥
@@ -15,7 +15,7 @@
   - 自签证书（无域名或测试用）
 - **节点管理**：新增、查看、修改、删除；每个协议一个独立配置文件，互不影响
 - **安全变更**：每次修改前自动快照，`sing-box check` 校验通过后才重启，失败自动回滚
-- **输出**：分享链接、终端二维码（需 `qrencode`）、客户端 outbound JSON，并保存到 `/etc/sing-box/nodes.txt`
+- **输出**：分享链接、终端二维码（需 `qrencode`）、客户端 outbound JSON，并保存链接到 `/etc/sing-box/nodes.txt`；Shadowsocks 额外输出 Mihomo YAML。AnyTLS+Reality 仅输出客户端 JSON，链接文件中记录配置获取提示
 - **系统**：Debian / Ubuntu / CentOS / Alma / Rocky / Alpine，支持 systemd 与 OpenRC
 - **架构**：amd64、arm64、armv7、386
 - **旧配置兼容**：检测到已有的 `/etc/sing-box/config.json` 时，可选择备份后接管，或保留旧配置只管理新增节点
@@ -79,6 +79,33 @@ curl -fsSL -o /usr/local/bin/sb ${GH_PROXY}https://github.com/Jonathan143/sb-ins
 | Hysteria2 | UDP | 是 |
 | TUIC v5 | UDP | 是 |
 | AnyTLS | TCP | 是（需要 sing-box 1.12+） |
+| AnyTLS + Reality | TCP | 否（需要 sing-box 1.12+；Mihomo 不支持此组合） |
+| Shadowsocks | TCP + UDP | 否 |
+
+### AnyTLS + Reality
+
+新增节点菜单选择 `6`，使用密码认证，自动生成 Reality 密钥对和 short ID，并复用 SNI 域名优选。无需申请证书，不提供 VLESS Flow 或 sing-mux 开关。已有的普通 AnyTLS 节点保持独立。
+
+`sb info` 输出含 SNI、uTLS 指纹、Reality 公钥和 short ID 的 sing-box outbound JSON。由于尚未验证可跨客户端使用的分享 URI，此组合不生成分享链接或二维码；`nodes.txt` 会提示运行 `sb info` 获取配置。
+
+**Clash Verge Rev / Mihomo 不支持 AnyTLS + Reality**，参见 [Mihomo 官方说明](https://wiki.metacubex.one/config/proxies/anytls/)。Mihomo 用户可以使用已有的普通 AnyTLS 或 VLESS+Reality 节点。Shadowrocket 等其他客户端需另行确认所用版本是否支持此组合及配置字段；不承诺通用链接导入，不输出 Loon 配置。
+
+### Shadowsocks
+
+新增节点菜单选择 `7`。支持以下加密方式，每个节点使用一个密码或密钥：
+
+| 加密方式 | 凭据 |
+|---|---|
+| `chacha20-ietf-poly1305`（默认，兼容优先） | 自动生成随机密码 |
+| `aes-128-gcm` | 自动生成随机密码 |
+| `aes-256-gcm` | 自动生成随机密码 |
+| `2022-blake3-aes-128-gcm` | 自动生成 16 字节随机密钥，使用 Base64 编码 |
+
+提供 SIP002 `ss://` 链接、二维码、sing-box outbound JSON 和 Mihomo YAML。SS2022 需要客户端版本支持所选算法，分享链接使用 SIP002 的 AEAD-2022 编码规则；若客户端无法导入，可使用配置输出或手动填写参数。为兼顾 Clash Verge Rev / Mihomo、sing-box、Shadowrocket 和 Loon，默认选择传统 AEAD 算法。
+
+监听和防火墙同时处理 TCP、UDP；NAT 机器需要将两种协议映射到同一个对外端口。节点状态只有在 TCP、UDP 均监听时才显示运行。
+
+`sb edit` 的选项 `2` 修改加密方式并生成新凭据，选项 `4` 重新生成当前算法的密码或密钥；修改后需同步更新客户端。不提供插件、额外 TLS 或 sing-mux 设置。
 
 ### NAT 小鸡注意事项
 

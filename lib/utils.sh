@@ -10,6 +10,8 @@ proto_label() {
   case ${1:-$N_PROTO} in
     reality) echo "VLESS+Reality" ;; ws) echo "VLESS+WS+TLS" ;; hy2) echo "Hysteria2" ;;
     tuic) echo "TUIC v5" ;; anytls) echo "AnyTLS" ;;
+    anytls-reality) echo "AnyTLS+Reality" ;; ss) echo "Shadowsocks" ;;
   esac
 }
-proto_net() { case ${1:-$N_PROTO} in hy2|tuic) echo udp ;; *) echo tcp ;; esac; }
+proto_net() { case ${1:-$N_PROTO} in hy2|tuic) echo udp ;; ss) echo both ;; *) echo tcp ;; esac; }
+uses_reality() { [[ $N_PROTO == reality || $N_PROTO == anytls-reality ]]; }

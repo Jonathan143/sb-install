@@ -19,6 +19,6 @@ cmp "$ROOT/source-help" "$ROOT/bundle-help"
 # Run existing behavior tests against the standalone artifact too.
 mkdir "$ROOT/tests"
 cp "$ROOT/standalone" "$ROOT/sb.sh"
-cp tests/{acme,lock,core-install,script-update,sni,multiplex}.sh "$ROOT/tests/"
+cp tests/{acme,lock,core-install,script-update,sni,multiplex,protocols}.sh "$ROOT/tests/"
 for test in "$ROOT"/tests/*.sh; do bash "$test"; done
 echo 'PASS: deterministic standalone build, self-install and bundled regressions'
