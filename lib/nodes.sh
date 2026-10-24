@@ -97,6 +97,7 @@ add_node() {
       toggle_multiplex || return 1
     fi
   fi
+  if [[ $N_PROTO == hy2 ]]; then pick_hy2_hop || return 1; fi
   case $(proto_net) in
     udp) info "提示: $(proto_label) 使用 UDP，NAT 机器请确认商家已映射 UDP 端口" ;;
     both) info "提示: Shadowsocks 使用 TCP + UDP，NAT 机器请将两种协议映射到相同对外端口" ;;
@@ -135,8 +136,9 @@ edit_node() {
   ui_item 6 "备注"
   [[ $N_PROTO != hy2 ]] || ui_item 7 "Hysteria2 混淆开关"
   if multiplex_supported; then ui_item 8 "Multiplex 多路复用开关（VLESS）"; fi
+  [[ $N_PROTO != hy2 ]] || ui_item 9 "Hysteria2 端口跳跃（商家转发）"
   ui_item 0 "返回"
-  c=$(ask_choice "请选择" 8) || return 1
+  c=$(ask_choice "请选择" 9) || return 1
   [[ $c != 0 ]] || { UI_SKIP_PAUSE=1; return 0; }
   snapshot
   case $c in
@@ -159,6 +161,7 @@ edit_node() {
     7) [[ $N_PROTO == hy2 ]] || { warn "仅 Hysteria2 支持"; return 1; }
        if [[ -n $N_OBFS ]]; then N_OBFS=""; info "混淆已关闭"; else N_OBFS=$(rand_str 16); info "混淆已开启"; fi ;;
     8) toggle_multiplex || return 1 ;;
+    9) pick_hy2_hop || return 1 ;;
     *) err "无效选择"; return 1 ;;
   esac
   meta_save

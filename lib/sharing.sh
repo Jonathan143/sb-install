@@ -4,7 +4,7 @@
 # 分享链接 / 客户端配置
 #---------------------------------------------------------------------
 node_link() {
-  local host name q
+  local host name q port
   host=$(host_fmt); name=$(urlenc "${N_NOTE:-$N_PROTO-$N_ID}")
   case $N_PROTO in
     anytls-reality)
@@ -28,10 +28,12 @@ node_link() {
       [[ $N_INSECURE == 1 ]] && q="$q&allowInsecure=1"
       echo "vless://$N_UUID@$host:$N_PPORT?$q#$name" ;;
     hy2)
-      q="sni=$N_DOMAIN"
-      [[ -n $N_OBFS ]] && q="$q&obfs=salamander&obfs-password=$N_OBFS"
+      validate_hy2_hop || return 1
+      port=${N_HOP_PORTS:-$N_PPORT}
+      q="sni=$(urlenc "$N_DOMAIN")"
+      [[ -n $N_OBFS ]] && q="$q&obfs=salamander&obfs-password=$(urlenc "$N_OBFS")"
       [[ $N_INSECURE == 1 ]] && q="$q&insecure=1"
-      echo "hysteria2://$N_PASS@$host:$N_PPORT?$q#$name" ;;
+      echo "hysteria2://$(urlenc "$N_PASS")@$host:$port?$q#$name" ;;
     tuic)
       q="congestion_control=bbr&udp_relay_mode=native&alpn=h3&sni=$N_DOMAIN"
       [[ $N_INSECURE == 1 ]] && q="$q&allow_insecure=1"
@@ -73,10 +75,13 @@ node_outbound() {
          tls:{enabled:true,server_name:$d,insecure:$ins,utls:{enabled:true,fingerprint:"chrome"}},
          transport:{type:"ws",path:$path,headers:{Host:$d}}} + $mux' ;;
     hy2)
+      validate_hy2_hop || return 1
       jq -n --arg tag "$tag" --arg server "$N_HOST" --argjson port "$N_PPORT" --arg pw "$N_PASS" \
-        --arg d "$N_DOMAIN" --arg obfs "$N_OBFS" --argjson ins "$ins" '
+        --arg d "$N_DOMAIN" --arg obfs "$N_OBFS" --argjson ins "$ins" \
+        --arg ports "${N_HOP_PORTS:-}" --arg interval "${N_HOP_INTERVAL:-30}" '
         {type:"hysteria2",tag:$tag,server:$server,server_port:$port,password:$pw,
          tls:{enabled:true,server_name:$d,insecure:$ins,alpn:["h3"]}}
+        | if $ports!="" then del(.server_port) | .server_ports=[$ports|gsub("-"; ":")] | .hop_interval=($interval+"s") else . end
         | if $obfs!="" then .obfs={type:"salamander",password:$obfs} else . end' ;;
     tuic)
       jq -n --arg tag "$tag" --arg server "$N_HOST" --argjson port "$N_PPORT" --arg uuid "$N_UUID" \
@@ -124,6 +129,13 @@ show_node() {
   echo "=================================================="
   echo "编号: $N_ID    协议: $(proto_label)    备注: $N_NOTE"
   echo "地址: $N_HOST    对外端口: $N_PPORT    监听端口: $N_LPORT"
+  if [[ $N_PROTO == hy2 ]]; then
+    echo "端口跳跃: ${N_HOP_PORTS:-关闭}${N_HOP_PORTS:+（间隔 ${N_HOP_INTERVAL:-30} 秒）}"
+    if [[ -n ${N_HOP_PORTS:-} ]]; then
+      echo "商家需将全部跳跃端口的 UDP 转发至监听端口 ${N_LPORT}。"
+      echo "sing-box 客户端需 1.11+；链接携带范围但不携带间隔，导入后请核对下方配置。"
+    fi
+  fi
   [[ -n $N_DOMAIN ]] && echo "域名/SNI: $N_DOMAIN"
   [[ $N_PROTO == reality ]] && echo "SNI: $N_SNI    Flow: ${N_FLOW:-关闭}"
   if [[ $N_PROTO == anytls-reality ]]; then
@@ -158,6 +170,11 @@ show_node() {
     echo "Mihomo 配置（将节点合并到现有 proxies 列表）:"
     node_mihomo_ss
   fi
+  if [[ $N_PROTO == hy2 ]]; then
+    echo "--------------------------------------------------"
+    echo "Mihomo 配置（将节点合并到现有 proxies 列表）:"
+    node_mihomo_hy2
+  fi
   if multiplex_supported; then
     echo "--------------------------------------------------"
     echo "mihomo 配置片段（放入对应节点内，与 server / port 同级）:"
@@ -171,6 +188,9 @@ write_nodes_txt() {
   local id
   { for id in $(list_ids); do meta_load "$id" && {
     echo "# [$id] $(proto_label) $N_NOTE"
+    if [[ $N_PROTO == hy2 && -n ${N_HOP_PORTS:-} ]]; then
+      echo "# 端口跳跃 ${N_HOP_PORTS}，间隔 ${N_HOP_INTERVAL:-30} 秒；链接不携带间隔，请运行 sb info $id 核对客户端配置。"
+    fi
     [[ ${N_MUX:-0} != 1 ]] || echo "# multiplex 已开启：链接不携带此设置，请运行 sb info $id 获取客户端配置（需 padding，关闭 Flow）。"
     if [[ $N_PROTO == anytls-reality ]]; then
       echo "# Mihomo 不支持此组合；无通用分享链接，请运行 sb info $id 获取 sing-box 配置。"

@@ -144,6 +144,7 @@ write_node_conf() {
         {inbounds:[{type:"vless",tag:$tag,listen:$listen,listen_port:$port,users:[{uuid:$uuid}],
           tls:$tls,transport:{type:"ws",path:$path}} + $mux]}' > "$tmp" ;;
     hy2)
+      validate_hy2_hop || { rm -f "$tmp"; return 1; }
       tls=$(tls_server_json "h3")
       jq -n --arg tag "$tag" --arg listen "$listen" --argjson port "$N_LPORT" --arg pw "$N_PASS" \
         --arg obfs "$N_OBFS" --argjson tls "$tls" '

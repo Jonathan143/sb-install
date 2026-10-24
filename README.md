@@ -7,6 +7,7 @@
 - **支持协议**：VLESS+Reality、VLESS+WS+TLS、Hysteria2、TUIC v5、AnyTLS、AnyTLS+Reality、Shadowsocks
 - **端口**：自定义，默认在 20000-60000 随机；监听端口与对外端口分开设置，适配 NAT 小鸡
 - **Reality**：Flow（`xtls-rprx-vision`）可选开启或关闭；SNI 支持多轮并发测速优选，展示平均握手耗时与成功率，按排名选择或手动输入，并检测 TLS 1.3、h2 和证书有效性
+- **Hysteria2 端口跳跃**：商家/NAT 已配置 UDP 转发时，可设置对外端口范围及跳跃间隔，输出 sing-box / Mihomo 客户端配置
 - **多路复用**：VLESS+Reality / VLESS+WS+TLS 可开启 multiplex，自动生成服务端和 sing-box 客户端配置，并显示 mihomo `smux` 配置片段；与 Reality Flow 互斥
 - **证书**：
   - DNS-01 自动申请（acme.sh，内置 Cloudflare / 阿里云 / DNSPod，也可填写其他 acme.sh DNS 插件），无需 80/443 端口，适合 NAT 机器
@@ -290,3 +291,13 @@ curl -fsSL "$SCRIPT_URL" -o /usr/local/bin/sb && chmod +x /usr/local/bin/sb && S
 主菜单选择「9 · 系统 DNS 配置」，或运行 `sb dns`。进入后显示当前配置；可选择 Cloudflare、Google、两者组合，或手动输入 1–3 个以空格分隔的 IPv4 / IPv6 地址（IPv6 使用纯十六进制形式，不含接口标识）。`sb dns show` 仅查看，无需安装 sing-box 或联网安装依赖。
 
 确认修改后写入静态 `/etc/resolv.conf`，保留 search、domain、options；如果原文件是符号链接，会替换链接而不修改链接目标。首次修改前将原文件或链接保存至 `/etc/resolv.conf.sb-backup`，菜单可恢复。DHCP、NetworkManager、云初始化等仍可能覆盖此文件；此功能不修改这些服务的配置。只读文件或容器挂载点无法替换时会报错。
+
+### Hysteria2 端口跳跃
+
+新增 Hysteria2 节点时可填写跳跃范围；已有节点使用 `sb edit` →「9 · Hysteria2 端口跳跃」。输入连续对外端口范围（例如 `20000-30000`，有效端口为 1–65535），再设置间隔（5–86400 秒，默认 30 秒）。输入 `0` 关闭跳跃，恢复使用原对外端口；输入 `q` 取消设置。旧节点默认关闭。
+
+此功能用于**商家/NAT 已完成 UDP 转发**的场景：范围内所有对外端口都应转发到同一个节点监听端口。脚本仅保存跳跃设置并生成客户端配置，不创建本机端口重定向规则，也不改变服务端监听端口。
+
+- sing-box 客户端需要 **1.11.0+**：开启时使用 `server_ports` 与 `hop_interval`，关闭时使用 `server_port`。
+- `sb info` 同时提供完整 Mihomo 配置，包含 `ports` 和 `hop-interval`。
+- 分享链接和二维码采用 Hysteria2 官方 URI 的端口范围格式；部分客户端可能不支持导入范围，请核对生成的配置。链接不携带跳跃间隔，自定义间隔需使用完整配置或在客户端手动设置。
