@@ -7,6 +7,14 @@ main() {
   esac
   [[ $EUID -eq 0 ]] || die "请使用 root 用户运行"
   acquire_lock || return 1
+  if [[ ${1:-} == dns ]]; then
+    case ${2:-} in
+      "") system_dns_menu ;;
+      show) system_dns_show ;;
+      *) usage; return 1 ;;
+    esac
+    return $?
+  fi
   bootstrap || return 1
   case ${1:-} in
     "") need_core && write_service; main_menu ;;

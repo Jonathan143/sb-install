@@ -16,6 +16,7 @@
 - **节点管理**：新增、查看、修改、删除；每个协议一个独立配置文件，互不影响
 - **安全变更**：每次修改前自动快照，`sing-box check` 校验通过后才重启，失败自动回滚
 - **输出**：分享链接、终端二维码（需 `qrencode`）、客户端 outbound JSON，并保存链接到 `/etc/sing-box/nodes.txt`；Shadowsocks 额外输出 Mihomo YAML。AnyTLS+Reality 仅输出客户端 JSON，链接文件中记录配置获取提示
+- **系统 DNS**：查看当前配置，选择 `1.1.1.1` / `8.8.8.8` 或手动输入 IPv4 / IPv6 地址，支持备份恢复
 - **系统**：Debian / Ubuntu / CentOS / Alma / Rocky / Alpine，支持 systemd 与 OpenRC
 - **架构**：amd64、arm64、armv7、386
 - **旧配置兼容**：检测到已有的 `/etc/sing-box/config.json` 时，可选择备份后接管，或保留旧配置只管理新增节点
@@ -62,12 +63,13 @@ curl -fsSL -o /usr/local/bin/sb ${GH_PROXY}https://github.com/Jonathan143/sb-ins
 | `sb status` | 服务状态、内核版本、节点监听、证书到期时间 |
 | `sb log [-f]` | 查看日志，`-f` 实时跟踪 |
 | `sb start` / `stop` / `restart` | 服务控制（启动和重启前会先校验配置） |
+| `sb dns` / `sb dns show` | 修改 / 查看系统 DNS |
 | `sb cert` | 查看证书到期时间，强制续期 |
 | `sb core` | 安装或更新 sing-box 内核 |
 | `sb update` | 更新 sb 脚本本身 |
 | `sb uninstall` | 卸载 |
 
-在主菜单选择「10 → 2」更新脚本成功后，按回车会直接重新运行新版 `sb`。使用 `sb update` 命令则在更新完成后退出。
+在主菜单选择「11 → 2」更新脚本成功后，按回车会直接重新运行新版 `sb`。使用 `sb update` 命令则在更新完成后退出。
 主菜单也会检查正在运行与磁盘安装的脚本版本；版本不一致时会显示两个版本，并提示按回车重新加载。已经运行的旧版脚本需先退出并重新运行一次，才能启用此检查。
 
 ## 协议与证书说明
@@ -282,3 +284,9 @@ curl -fsSL "$SCRIPT_URL" -o /usr/local/bin/sb && chmod +x /usr/local/bin/sb && S
 - [SagerNet/sing-box](https://github.com/SagerNet/sing-box)
 - [acmesh-official/acme.sh](https://github.com/acmesh-official/acme.sh)
 - [harenaNow/SNI-TLS-test](https://github.com/harenaNow/SNI-TLS-test)（SNI 多轮测速与排序思路参考）
+
+### 系统 DNS
+
+主菜单选择「9 · 系统 DNS 配置」，或运行 `sb dns`。进入后显示当前配置；可选择 Cloudflare、Google、两者组合，或手动输入 1–3 个以空格分隔的 IPv4 / IPv6 地址（IPv6 使用纯十六进制形式，不含接口标识）。`sb dns show` 仅查看，无需安装 sing-box 或联网安装依赖。
+
+确认修改后写入静态 `/etc/resolv.conf`，保留 search、domain、options；如果原文件是符号链接，会替换链接而不修改链接目标。首次修改前将原文件或链接保存至 `/etc/resolv.conf.sb-backup`，菜单可恢复。DHCP、NetworkManager、云初始化等仍可能覆盖此文件；此功能不修改这些服务的配置。只读文件或容器挂载点无法替换时会报错。

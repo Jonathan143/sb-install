@@ -3,6 +3,7 @@ ui
 utils
 config
 system
+dns
 core
 bootstrap
 network
