@@ -53,6 +53,10 @@ jobs:
             # Docker already provides networking; expose that dependency to OpenRC.
             printf "#!/sbin/openrc-run\ndepend() { provide net; }\nstart() { return 0; }\n" > /etc/init.d/container-net
             chmod +x /etc/init.d/container-net
+            # Initialize OpenRC lock/state directories before the first service start.
+            # A softlevel file alone leaves /run/openrc/exclusive missing.
+            rc-update --update
             rc-service container-net start
+            rc-service container-net status
             SB_TEST_CORE=/core/sing-box SB_TEST_SERVICE=openrc bash /work/tests/integration.sh
           '
