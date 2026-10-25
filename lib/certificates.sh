@@ -189,6 +189,7 @@ cert_dns() {
     acme_issue_error "$log"; rm -f "$log"; return 1
   fi
   mkdir -p "$d" || { rm -f "$log"; return 1; }
+  NODE_CERT_CHANGED=1
   "$ACME_SH" --install-cert -d "$N_DOMAIN" --ecc \
     --fullchain-file "$d/fullchain.pem" --key-file "$d/key.pem" --reloadcmd "$(reload_cmd)" > "$log" 2>&1
   rc=$?
@@ -202,7 +203,8 @@ cert_dns() {
   fi
   rm -f "$log"
   [[ -s $d/fullchain.pem && -s $d/key.pem ]] || { err "证书安装失败"; return 1; }
-  chmod 600 "$d/key.pem"
+  chmod 600 "$d/key.pem" || return 1
+  rm -f "$d/.selfsigned" || return 1
   N_CERTMODE=dns; N_CERT=$d/fullchain.pem; N_KEY=$d/key.pem; N_INSECURE=0
   info "证书已就绪，到期时间: $(cert_expiry "$N_CERT")，acme.sh 会自动续期"
 }
@@ -240,13 +242,16 @@ cert_manual() {
 }
 
 cert_self() {
-  local d="$CERT_DIR/$N_DOMAIN"
-  mkdir -p "$d"
+  local d parent="$CERT_DIR/$N_DOMAIN"
+  mkdir -p "$parent" || return 1
+  # A new self-signed certificate must never replace another node's trusted pair.
+  d=$(mktemp -d "$parent/self.XXXXXX") || return 1
+  NODE_CERT_CHANGED=1
   openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
     -keyout "$d/key.pem" -out "$d/fullchain.pem" -days 3650 \
     -subj "/CN=$N_DOMAIN" -addext "subjectAltName=DNS:$N_DOMAIN" >/dev/null 2>&1 \
-    || { err "自签证书生成失败"; return 1; }
-  chmod 600 "$d/key.pem"; touch "$d/.selfsigned"
+    || { rm -rf "$d"; err "自签证书生成失败"; return 1; }
+  if ! chmod 600 "$d/key.pem" || ! touch "$d/.selfsigned"; then rm -rf "$d"; return 1; fi
   N_CERTMODE=self; N_CERT=$d/fullchain.pem; N_KEY=$d/key.pem; N_INSECURE=1
   info "已生成自签证书，客户端需要开启 insecure（跳过证书验证）"
 }

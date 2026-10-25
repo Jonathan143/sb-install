@@ -147,7 +147,7 @@ done
 # Updating to an insufficient core must fail before any node setup.
 (
   need_core() { :; }; core_version() { echo 1.11.0; }
-  ask() { echo 6; }; confirm() { return 0; }; install_core() { return 0; }
+  ask() { echo 6; }; confirm() { return 0; }; activate_core() { return 0; }
   pick_port() { fail 'unsupported core reached node setup'; }
   if add_node > "$ROOT/old-core" 2>&1; then fail 'old core accepted'; fi
 ) || exit 1

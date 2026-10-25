@@ -28,7 +28,8 @@ list_nodes() {
   done
 }
 
-add_node() {
+add_node() { node_change add_node_impl "$@"; }
+add_node_impl() {
   local p def_host cdn added_id
   need_core || return 1
   ui_title "新增节点 · 选择协议"
@@ -52,12 +53,13 @@ add_node() {
   esac
   if [[ $N_PROTO == anytls || $N_PROTO == anytls-reality ]] && ! version_ge "$(core_version)" 1.12.0; then
     warn "AnyTLS 需要 sing-box 1.12.0 及以上，当前为 $(core_version)"
-    confirm "现在更新内核?" y && install_core || return 1
+    confirm "现在更新内核?" y && activate_core || return 1
     version_ge "$(core_version)" 1.12.0 || { err "更新后内核仍不支持 AnyTLS"; return 1; }
   fi
 
   pick_port "$(proto_net)" "" "" || return 1; N_LPORT=$PICKED
   N_PPORT=$(ask_pub_port "$N_LPORT") || return 1
+  snapshot || return 1
 
   case $N_PROTO in
     reality|anytls-reality)
@@ -107,8 +109,8 @@ add_node() {
   [[ -z $N_HOST ]] && { err "地址不能为空"; return 1; }
   N_NOTE=$(ask "节点备注" "$(proto_label)-$N_ID") || return 1
 
-  snapshot
-  meta_save
+  NODE_FILES_CHANGED=1
+  meta_save || return 1
   write_node_conf || { err "生成配置失败"; restore_snapshot; return 1; }
   fw_open "$N_LPORT" "$(proto_net)"
   if apply_config; then
@@ -120,10 +122,11 @@ add_node() {
   fi
 }
 
-edit_node() {
+edit_node() { node_change edit_node_impl "$@"; }
+edit_node_impl() {
   local old_l old_net c v new_l
   select_node "${1:-}" || return 1
-  meta_load "$SEL_ID"
+  meta_load "$SEL_ID" || return 1
   old_l=$N_LPORT; old_net=$(proto_net)
   ui_title "修改节点 [$N_ID] $(proto_label) $N_NOTE"
   ui_item 1 "端口（监听 / 对外）"
@@ -140,7 +143,7 @@ edit_node() {
   ui_item 0 "返回"
   c=$(ask_choice "请选择" 9) || return 1
   [[ $c != 0 ]] || { UI_SKIP_PAUSE=1; return 0; }
-  snapshot
+  snapshot || return 1
   case $c in
     1) pick_port "$(proto_net)" "$N_ID" "$old_l" || return 1; N_LPORT=$PICKED
        N_PPORT=$(ask_pub_port "$N_PPORT") || return 1 ;;
@@ -164,7 +167,8 @@ edit_node() {
     9) pick_hy2_hop || return 1 ;;
     *) err "无效选择"; return 1 ;;
   esac
-  meta_save
+  NODE_FILES_CHANGED=1
+  meta_save || return 1
   write_node_conf || { restore_snapshot; return 1; }
   new_l=$N_LPORT
   if [[ $new_l != "$old_l" ]]; then fw_open "$new_l" "$old_net"; fi
@@ -173,21 +177,24 @@ edit_node() {
     info "修改已生效"; show_node "$SEL_ID"
   else
     if [[ $new_l != "$old_l" ]]; then fw_close "$new_l" "$old_net"; fi
-    err "修改失败，已回滚"; return 1
+    err "修改未生效"; return 1
   fi
 }
 
-delete_node() {
+delete_node() { node_change delete_node_impl "$@"; }
+delete_node_impl() {
   local id other
   select_node "${1:-}" || return 1
   id=$SEL_ID
-  meta_load "$id"
+  meta_load "$id" || return 1
   confirm "确认删除节点 [$id] $(proto_label) $N_NOTE ?" n || return 0
-  snapshot
+  snapshot || return 1
   local dom=$N_DOMAIN mode=$N_CERTMODE port=$N_LPORT net; net=$(proto_net)
-  rm -f "$(conf_file)" "$META_DIR/$id.env"
-  if [[ -z $(list_ids) ]]; then
-    svc stop >/dev/null 2>&1; write_nodes_txt
+  NODE_FILES_CHANGED=1
+  rm -f "$(conf_file)" "$META_DIR/$id.env" || return 1
+  if [[ -z $(list_ids) && ! ( ${SB_MODE:-takeover} == coexist && -f $SB_DIR/config.json ) ]]; then
+    svc stop >/dev/null 2>&1 || { err "服务停止失败，已取消删除"; return 1; }
+    write_nodes_txt || return 1
     info "已无任何节点，sing-box 服务已停止"
   else
     apply_config || return 1

@@ -50,12 +50,17 @@ validate_ss() {
 }
 
 tls_server_json() { # alpn(可空)
+  local modern=false version
   if [[ $N_CERTMODE == builtin ]]; then
-    jq -n --arg d "$N_DOMAIN" --arg email "$ACME_EMAIL" --arg v "$N_ACMEV" --arg alpn "$1" '
+    version=$(core_version) || { err "无法确定内核版本，未生成内置 ACME 配置"; return 1; }
+    version_ge "$version" 1.14.0 && modern=true
+    jq -n --arg d "$N_DOMAIN" --arg email "$ACME_EMAIL" --arg v "$N_ACMEV" --arg alpn "$1" \
+      --arg data "$SB_WORKDIR/acme" --argjson modern "$modern" '
       {enabled:true,server_name:$d,
-       acme:({domain:[$d],data_directory:"/var/lib/sing-box/acme",provider:"letsencrypt",
+       acme:({domain:[$d],data_directory:$data,provider:"letsencrypt",
               disable_http_challenge:($v=="alpn"),disable_tls_alpn_challenge:($v=="http")}
              + (if $email!="" then {email:$email} else {} end))}
+      | (if $modern then .certificate_provider=(.acme + {type:"acme"}) | del(.acme) else . end)
       + (if $alpn!="" then {alpn:[$alpn]} else {} end)'
   else
     jq -n --arg d "$N_DOMAIN" --arg c "$N_CERT" --arg k "$N_KEY" --arg alpn "$1" '
@@ -63,6 +68,16 @@ tls_server_json() { # alpn(可空)
       + (if $alpn!="" then {alpn:[$alpn]} else {} end)'
   fi
 }
+
+# Regenerate only managed ACME nodes; never rewrite a coexisting config.json.
+# A subshell prevents metadata iteration from changing the selected node.
+refresh_builtin_acme_configs() (
+  local id
+  for id in $(list_ids); do
+    meta_load "$id" || return 1
+    if [[ $N_CERTMODE == builtin ]]; then write_node_conf || return 1; fi
+  done
+)
 
 #---------------------------------------------------------------------
 # 多路复用（sing-mux；仅 VLESS）
@@ -117,7 +132,7 @@ toggle_reality_flow() {
 write_node_conf() {
   local tag="${N_PROTO}-${N_ID}" listen tls f tmp mux
   mux=$(node_multiplex_json inbound) || return 1
-  listen=$(listen_addr); f=$(conf_file); tmp=$(mktemp)
+  listen=$(listen_addr); f=$(conf_file); tmp=$(mktemp "${f}.XXXXXX") || return 1
   case $N_PROTO in
     anytls-reality)
       jq -n --arg tag "$tag" --arg listen "$listen" --argjson port "$N_LPORT" --arg pw "$N_PASS" \
@@ -138,30 +153,30 @@ write_node_conf() {
           tls:{enabled:true,server_name:$sni,
                reality:{enabled:true,handshake:{server:$sni,server_port:443},private_key:$priv,short_id:[$sid]}}} + $mux]}' > "$tmp" ;;
     ws)
-      tls=$(tls_server_json "")
+      tls=$(tls_server_json "") || { rm -f "$tmp"; return 1; }
       jq -n --arg tag "$tag" --arg listen "$listen" --argjson port "$N_LPORT" --arg uuid "$N_UUID" \
         --arg path "$N_WSPATH" --argjson tls "$tls" --argjson mux "$mux" '
         {inbounds:[{type:"vless",tag:$tag,listen:$listen,listen_port:$port,users:[{uuid:$uuid}],
           tls:$tls,transport:{type:"ws",path:$path}} + $mux]}' > "$tmp" ;;
     hy2)
       validate_hy2_hop || { rm -f "$tmp"; return 1; }
-      tls=$(tls_server_json "h3")
+      tls=$(tls_server_json "h3") || { rm -f "$tmp"; return 1; }
       jq -n --arg tag "$tag" --arg listen "$listen" --argjson port "$N_LPORT" --arg pw "$N_PASS" \
         --arg obfs "$N_OBFS" --argjson tls "$tls" '
         {inbounds:[{type:"hysteria2",tag:$tag,listen:$listen,listen_port:$port,users:[{password:$pw}],tls:$tls}
           + (if $obfs!="" then {obfs:{type:"salamander",password:$obfs}} else {} end)]}' > "$tmp" ;;
     tuic)
-      tls=$(tls_server_json "h3")
+      tls=$(tls_server_json "h3") || { rm -f "$tmp"; return 1; }
       jq -n --arg tag "$tag" --arg listen "$listen" --argjson port "$N_LPORT" --arg uuid "$N_UUID" \
         --arg pw "$N_PASS" --argjson tls "$tls" '
         {inbounds:[{type:"tuic",tag:$tag,listen:$listen,listen_port:$port,users:[{uuid:$uuid,password:$pw}],
           congestion_control:"bbr",tls:$tls}]}' > "$tmp" ;;
     anytls)
-      tls=$(tls_server_json "")
+      tls=$(tls_server_json "") || { rm -f "$tmp"; return 1; }
       jq -n --arg tag "$tag" --arg listen "$listen" --argjson port "$N_LPORT" --arg pw "$N_PASS" \
         --argjson tls "$tls" '
         {inbounds:[{type:"anytls",tag:$tag,listen:$listen,listen_port:$port,users:[{password:$pw}],tls:$tls}]}' > "$tmp" ;;
     *) rm -f "$tmp"; return 1 ;;
   esac || { rm -f "$tmp"; return 1; }
-  mv -f "$tmp" "$f"; chmod 600 "$f"
+  if ! chmod 600 "$tmp" || ! mv -f "$tmp" "$f"; then rm -f "$tmp"; return 1; fi
 }

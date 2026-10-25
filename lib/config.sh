@@ -23,9 +23,12 @@ save_conf() {
 meta_reset() { local v; for v in "${NODE_VARS[@]}"; do printf -v "$v" '%s' ''; done; N_MUX=0; }
 meta_load() { local f="$META_DIR/$1.env"; [[ $1 =~ ^[0-9]+$ && -f $f ]] || return 1; meta_reset; . "$f"; }
 meta_save() {
-  local v f="$META_DIR/$N_ID.env"
-  { for v in "${NODE_VARS[@]}"; do printf '%s=%q\n' "$v" "${!v}"; done; } > "$f"
-  chmod 600 "$f"
+  local v f="$META_DIR/$N_ID.env" tmp
+  tmp=$(mktemp "${f}.XXXXXX") || return 1
+  if ! { for v in "${NODE_VARS[@]}"; do printf '%s=%q\n' "$v" "${!v}" || { rm -f "$tmp"; return 1; }; done; } > "$tmp" ||
+     ! chmod 600 "$tmp" || ! mv -f "$tmp" "$f"; then
+    rm -f "$tmp"; return 1
+  fi
 }
 list_ids() { ls "$META_DIR" 2>/dev/null | sed -n 's/\.env$//p' | sort -n; }
 next_id() { local i=1; while [[ -f $META_DIR/$i.env ]]; do i=$((i+1)); done; echo "$i"; }

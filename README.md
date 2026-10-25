@@ -15,7 +15,7 @@
   - 手动指定证书文件（自动校验证书与私钥是否匹配、域名是否匹配）
   - 自签证书（无域名或测试用）
 - **节点管理**：新增、查看、修改、删除；每个协议一个独立配置文件，互不影响
-- **安全变更**：每次修改前自动快照，`sing-box check` 校验通过后才重启，失败自动回滚
+- **安全变更**：修改前快照配置、节点元数据和托管证书；备份失败则取消操作。`sing-box check` 校验通过后才重启，重启和运行状态检查失败时回滚；恢复时先在临时目录解压验证，损坏快照不会删除现有配置
 - **输出**：分享链接、终端二维码（需 `qrencode`）、客户端 outbound JSON，并保存链接到 `/etc/sing-box/nodes.txt`；Shadowsocks 额外输出 Mihomo YAML。AnyTLS+Reality 仅输出客户端 JSON，链接文件中记录配置获取提示
 - **系统 DNS**：查看当前配置，选择 `1.1.1.1` / `8.8.8.8` 或手动输入 IPv4 / IPv6 地址，支持备份恢复
 - **系统**：Debian / Ubuntu / CentOS / Alma / Rocky / Alpine，支持 systemd 与 OpenRC
@@ -71,7 +71,10 @@ curl -fsSL -o /usr/local/bin/sb ${GH_PROXY}https://github.com/Jonathan143/sb-ins
 | `sb uninstall` | 卸载 |
 
 在主菜单选择「11 → 2」更新脚本成功后，按回车会直接重新运行新版 `sb`。使用 `sb update` 命令则在更新完成后退出。
+更新会检查文件非空、版本号、Bash 语法和独立脚本结构；Release 下载地址还必须通过同目录 `SHA256SUMS` 校验。下载、校验或安装失败会保留原命令。自定义下载地址需提供完整的独立构建产物。
 主菜单也会检查正在运行与磁盘安装的脚本版本；版本不一致时会显示两个版本，并提示按回车重新加载。已经运行的旧版脚本需先退出并重新运行一次，才能启用此检查。
+
+最新版更新与指定版本安装都先备份内核和配置，再校验配置、重启并确认服务运行；失败会恢复原内核和配置，并尝试恢复更新前的服务状态。内置 ACME 配置会随目标内核版本重新生成：1.14+ 使用 `tls.certificate_provider`，较旧版本保留 `tls.acme`，共存模式的旧 `config.json` 不会被改写。迁移格式见 [sing-box 官方迁移说明](https://sing-box.sagernet.org/migration/#migrate-inline-acme-to-certificate-provider)。
 
 ## 协议与证书说明
 
@@ -163,6 +166,8 @@ DNS-01 申请前会检查 Let's Encrypt 的 ACME 目录连接，申请时显式�
 
 使用 DNS-01 时，acme.sh 会把 DNS API 凭据保存在 `~/.acme.sh/account.conf` 中用于自动续期，请妥善保管服务器权限。续期成功后会自动重启 sing-box。
 
+节点新增或修改过程中取消、失败时，会恢复托管证书文件。自签证书使用域名下独立的 `self.*` 目录，不覆盖其他节点使用的 DNS 证书。手动指定的外部证书文件不会被修改；已经向 CA 发出的签发请求和 acme.sh 账户记录不属于本地文件回滚范围。
+
 ## 文件位置
 
 | 路径 | 说明 |
@@ -171,7 +176,7 @@ DNS-01 申请前会检查 Let's Encrypt 的 ACME 目录连接，申请时显式�
 | `/usr/local/bin/sing-box` | sing-box 内核 |
 | `/etc/sing-box/conf.d/` | 节点配置，每个节点一个 JSON 文件 |
 | `/etc/sing-box/meta/` | 节点元数据，用于查看和修改节点 |
-| `/etc/sing-box/certs/<域名>/` | 证书（`fullchain.pem`、`key.pem`） |
+| `/etc/sing-box/certs/<域名>/` | DNS 证书（`fullchain.pem`、`key.pem`）；自签证书保存于独立的 `self.*` 子目录 |
 | `/etc/sing-box/backup/` | 变更前的配置快照，保留最近 10 份 |
 | `/etc/sing-box/nodes.txt` | 所有节点的分享链接 |
 | `/etc/sing-box/sb.conf` | 脚本设置 |
@@ -201,7 +206,7 @@ DNS-01 申请前会检查 Let's Encrypt 的 ACME 目录连接，申请时显式�
 脚本会自动回滚到修改前的配置。详细原因可以用 `sb log` 查看。
 
 **Hysteria2 端口跳跃？**
-暂不支持。
+支持商家/NAT 已配置 UDP 转发的场景，可在新增节点或 `sb edit` 的选项 `9` 设置对外端口范围及间隔；详见文末说明。脚本不创建本机端口重定向规则。
 
 ## 卸载
 
@@ -234,6 +239,8 @@ bash scripts/check.sh       # 语法、功能、交互及独立产物回归检�
 bash scripts/build.sh       # 生成 dist/sb.sh（不提交生成文件）
 bash dist/sb.sh help        # 无需 lib 目录即可运行
 ```
+
+有本地 sing-box 内核时，可运行 `SB_TEST_CORE=/绝对路径/sing-box bash tests/integration.sh`：使用真实内核校验全部协议及内置 ACME 配置，并在回环地址验证 Shadowsocks 客户端到服务端的 HTTP 请求。CI 另在 systemd 和 Alpine/OpenRC 中测试 1.12.0、1.14.4 的服务启停、重启和内核激活；这些测试不申请公网证书、不访问外部代理目标。
 
 Release 工作流自动生成独立脚本并计算校验和；部署时无需额外下载模块。新建模块后，记得加入 `lib/modules.list`。
 

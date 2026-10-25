@@ -184,9 +184,12 @@ show_node() {
   echo "=================================================="
 }
 
-write_nodes_txt() {
-  local id
-  { for id in $(list_ids); do meta_load "$id" && {
+write_nodes_txt() (
+  local id tmp
+  tmp=$(mktemp "$SB_DIR/.nodes.XXXXXX") || return 1
+  trap 'rm -f "$tmp"' EXIT
+  { for id in $(list_ids); do
+    meta_load "$id" || return 1
     echo "# [$id] $(proto_label) $N_NOTE"
     if [[ $N_PROTO == hy2 && -n ${N_HOP_PORTS:-} ]]; then
       echo "# 端口跳跃 ${N_HOP_PORTS}，间隔 ${N_HOP_INTERVAL:-30} 秒；链接不携带间隔，请运行 sb info $id 核对客户端配置。"
@@ -196,9 +199,9 @@ write_nodes_txt() {
       echo "# Mihomo 不支持此组合；无通用分享链接，请运行 sb info $id 获取 sing-box 配置。"
     else
       [[ $N_PROTO != ss || $N_METHOD != 2022-* ]] || echo "# SS2022：客户端版本必须支持 $N_METHOD。"
-      node_link
+      node_link || return 1
     fi
     echo
-  }; done; } > "$SB_DIR/nodes.txt"
-  chmod 600 "$SB_DIR/nodes.txt"
-}
+  done; } > "$tmp" || return 1
+  chmod 600 "$tmp" && mv -f "$tmp" "$SB_DIR/nodes.txt"
+)

@@ -18,3 +18,41 @@ jobs:
         run: |
           docker run --rm --pids-limit 40 -v "$PWD:/work" -w /work alpine:3.21 \
             sh -c 'apk add --no-cache bash coreutils openssl && bash tests/sni.sh'
+  integration:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ['1.12.0', '1.14.4']
+        manager: [systemd, openrc]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Download official test core
+        env:
+          CORE_VERSION: ${{ matrix.version }}
+          SERVICE_MANAGER: ${{ matrix.manager }}
+        run: |
+          variant=''
+          if [[ "$SERVICE_MANAGER" == openrc && "$CORE_VERSION" != 1.12.0 ]]; then variant=-musl; fi
+          asset="sing-box-${CORE_VERSION}-linux-amd64${variant}"
+          mkdir "$RUNNER_TEMP/sb-test-core"
+          curl -fsSL --retry 3 "https://github.com/SagerNet/sing-box/releases/download/v${CORE_VERSION}/${asset}.tar.gz" -o "$RUNNER_TEMP/core.tgz"
+          tar -xzf "$RUNNER_TEMP/core.tgz" -C "$RUNNER_TEMP/sb-test-core" --strip-components=1
+      - name: systemd integration
+        if: matrix.manager == 'systemd'
+        run: sudo env SB_TEST_CORE="$RUNNER_TEMP/sb-test-core/sing-box" SB_TEST_SERVICE=systemd bash tests/integration.sh
+      - name: OpenRC integration
+        if: matrix.manager == 'openrc'
+        run: |
+          docker run --rm -v "$PWD:/work:ro" -v "$RUNNER_TEMP/sb-test-core:/core:ro" alpine:3.21 sh -ec '
+            apk add --no-cache bash jq openssl curl python3 coreutils openrc
+            mkdir -p /run/openrc
+            touch /run/openrc/softlevel
+            # Docker already provides networking; expose that dependency to OpenRC.
+            printf "#!/sbin/openrc-run\ndepend() { provide net; }\nstart() { return 0; }\n" > /etc/init.d/container-net
+            chmod +x /etc/init.d/container-net
+            rc-service container-net start
+            SB_TEST_CORE=/core/sing-box SB_TEST_SERVICE=openrc bash /work/tests/integration.sh
+          '

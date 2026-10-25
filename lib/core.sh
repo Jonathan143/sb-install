@@ -76,11 +76,19 @@ sb_args() {
   SB_ARGS+=(-C "$CONF_DIR")
 }
 
+write_service_file() {
+  local file=$1 mode=$2 tmp
+  tmp=$(mktemp "${file}.XXXXXX") || return 1
+  if ! cat > "$tmp" || ! chmod "$mode" "$tmp" || ! mv -f "$tmp" "$file"; then
+    rm -f "$tmp"; err "服务定义写入失败，原文件未替换"; return 1
+  fi
+}
+
 write_service() {
   sb_args
-  mkdir -p "$SB_WORKDIR"
+  mkdir -p "$SB_WORKDIR" || return 1
   if has_systemd; then
-    cat > /etc/systemd/system/$SB_SERVICE.service <<EOF
+    write_service_file "/etc/systemd/system/$SB_SERVICE.service" 644 <<EOF
 [Unit]
 Description=sing-box service
 After=network.target nss-lookup.target network-online.target
@@ -95,22 +103,25 @@ LimitNOFILE=1048576
 [Install]
 WantedBy=multi-user.target
 EOF
+    [[ $? == 0 ]] || return 1
     systemctl daemon-reload
   elif command -v rc-service >/dev/null; then
-    cat > /etc/init.d/$SB_SERVICE <<EOF
+    write_service_file "/etc/init.d/$SB_SERVICE" 755 <<EOF
 #!/sbin/openrc-run
 name="sing-box"
 command="$SB_BIN"
 command_args="${SB_ARGS[*]} run"
 command_background=true
-pidfile="/run/sing-box.pid"
+pidfile="/run/$SB_SERVICE.pid"
 output_log="/var/log/sing-box.log"
 error_log="/var/log/sing-box.log"
 depend() { need net; }
 EOF
-    chmod +x /etc/init.d/$SB_SERVICE
+    [[ $? == 0 ]] || return 1
+    return 0
   else
     warn "未检测到 systemd 或 OpenRC，需要自行管理 sing-box 进程"
+    return 1
   fi
 }
 
