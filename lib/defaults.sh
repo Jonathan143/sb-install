@@ -18,11 +18,43 @@ ACME_HOME="${ACME_HOME:-/root/.acme.sh}"
 ACME_SH="$ACME_HOME/acme.sh"
 ACME_SERVER="https://acme-v02.api.letsencrypt.org/directory"
 
-SNI_LIST=(
-  addons.mozilla.org dl-cdn.alpinelinux.org www.python.org pypi.org
-  www.samsung.com www.nvidia.com www.intel.com www.sony.com
-  www.visa.com www.mastercard.com www.paypal.com www.stanford.edu
-  www.lovelive-anime.jp www.cathaypacific.com www.singaporeair.com
+# 域名|展示分类
+SNI_CATALOG=(
+  'addons.mozilla.org|Firefox 扩展'
+  'dl-cdn.alpinelinux.org|Linux 镜像'
+  'www.python.org|Python 官网'
+  'pypi.org|Python 包仓库'
+  'www.lovelive-anime.jp|日本动漫'
+  'www.cathaypacific.com|航空公司'
+  'www.u-tokyo.ac.jp|日本高校'
+  'www.kyoto-u.ac.jp|日本高校'
+  'www.nus.edu.sg|新加坡高校'
+  'www.ntu.edu.sg|新加坡高校'
+  'www.hku.hk|香港高校'
+  'www.hkust.edu.hk|香港高校'
+  'www.stanford.edu|美国高校'
+  'www.mit.edu|美国高校'
+  'www.harvard.edu|美国高校'
+  'www.ox.ac.uk|英国高校'
+  'www.cam.ac.uk|英国高校'
+  'www.ethz.ch|瑞士高校'
+  'www.unimelb.edu.au|澳洲高校'
+  'deb.debian.org|Linux 镜像'
+  'crates.io|Rust 包仓库'
+  'static.rust-lang.org|Rust 软件分发'
+  'rubygems.org|Ruby 包仓库'
+  'www.cpan.org|Perl 包仓库'
+  'cpan.org|Perl 包仓库'
+  'formulae.brew.sh|Homebrew 元数据'
+)
+SNI_LIST=()
+for sni_entry in "${SNI_CATALOG[@]}"; do SNI_LIST+=("${sni_entry%%|*}"); done
+unset sni_entry
+
+SNI_QUICK_LIST=(
+  www.u-tokyo.ac.jp www.nus.edu.sg www.stanford.edu www.ox.ac.uk
+  dl-cdn.alpinelinux.org www.python.org pypi.org addons.mozilla.org
+  www.lovelive-anime.jp www.cathaypacific.com
 )
 
 NODE_VARS=(N_ID N_PROTO N_LPORT N_PPORT N_HOST N_DOMAIN N_SNI N_UUID N_PASS N_FLOW N_MUX

@@ -3,6 +3,28 @@
 #---------------------------------------------------------------------
 # SNI（Reality）
 #---------------------------------------------------------------------
+sni_domain_info() { # 域名 -> SNI_CATEGORY；只做本地分类查询
+  local entry
+  SNI_CATEGORY='自定义域名'
+  for entry in "${SNI_CATALOG[@]}"; do
+    if [[ ${entry%%|*} == "$1" ]]; then
+      SNI_CATEGORY=${entry#*|}
+      return 0
+    fi
+  done
+}
+
+sni_ask_mode() {
+  local value def=1
+  [[ ${SNI_SCAN_MODE:-quick} != all ]] || def=2
+  ui_section '检测范围' >&2
+  ui_item 1 "快速检测（${#SNI_QUICK_LIST[@]} 个域名，默认）" >&2
+  ui_item 2 "检测全部（${#SNI_LIST[@]} 个域名）" >&2
+  ui_item 0 '返回' >&2
+  value=$(ask_choice '请选择检测范围' 2 "$def") || return 1
+  case $value in 1) echo quick ;; 2) echo all ;; *) return 1 ;; esac
+}
+
 sni_now_ms() {
   local now
   if [[ -n ${EPOCHREALTIME:-} ]]; then
@@ -39,10 +61,11 @@ check_sni() { # 域名 [超时秒数]；SNI_FAILURE 返回失败原因
 
 sni_progress() { # 域名 [成功次数 平均耗时 状态]；只写 stderr
   local RED GREEN YELLOW CYAN PLAIN BOLD DIM
-  local color mark state latency="-"
+  local color mark state latency="-" SNI_CATEGORY
   ui_colors 2
+  sni_domain_info "$1"
   if (($# == 1)); then
-    printf '  %s[%s]  %-36s  … 检测中%s\n' "$DIM" "${SNI_PROGRESS_LABEL:---/--}" "$1" "$PLAIN" >&2
+    printf '  %s[%s]  %-36s  [%s] … 检测中%s\n' "$DIM" "${SNI_PROGRESS_LABEL:---/--}" "$1" "$SNI_CATEGORY" "$PLAIN" >&2
     return 0
   fi
   case $2 in
@@ -51,8 +74,8 @@ sni_progress() { # 域名 [成功次数 平均耗时 状态]；只写 stderr
     *) color=$YELLOW; mark='!'; state=$4 ;;
   esac
   (( $2 == 0 )) || latency="$3 ms"
-  printf '  %s[%s]%s  %-36s  %8s  %s/3  %s%s %s%s\n' \
-    "$DIM" "${SNI_PROGRESS_LABEL:---/--}" "$PLAIN" "$1" "$latency" "$2" "$color" "$mark" "$state" "$PLAIN" >&2
+  printf '  %s[%s]%s  %-36s  [%s] %8s  %s/3  %s%s %s%s\n' \
+    "$DIM" "${SNI_PROGRESS_LABEL:---/--}" "$PLAIN" "$1" "$SNI_CATEGORY" "$latency" "$2" "$color" "$mark" "$state" "$PLAIN" >&2
 }
 
 sni_measure() { # 域名 -> 成功次数、平均毫秒、域名、状态（TSV）
@@ -131,8 +154,13 @@ sni_limit_concurrency() {
 }
 
 sni_scan() ( # 子 shell 隔离临时目录与信号处理；并发数 1–4
-  local tmp domain seen pid i=0 failed=0 concurrency SNI_SCAN_TMP SNI_PROGRESS_LABEL
-  local pids=() domains=()
+  local tmp domain seen pid i=0 failed=0 concurrency label SNI_SCAN_TMP SNI_PROGRESS_LABEL
+  local pids=() domains=() candidates=()
+  case ${SNI_SCAN_MODE:-quick} in
+    quick) candidates=("${SNI_QUICK_LIST[@]}"); label='快速检测' ;;
+    all) candidates=("${SNI_LIST[@]}"); label='检测全部' ;;
+    *) warn '无效的 SNI 检测范围'; return 1 ;;
+  esac
   concurrency=$(sni_concurrency)
   sni_limit_concurrency "$concurrency" || return 1
   concurrency=$SNI_EFFECTIVE_CONCURRENCY
@@ -142,7 +170,7 @@ sni_scan() ( # 子 shell 隔离临时目录与信号处理；并发数 1–4
   trap 'exit 130' INT
   trap 'exit 143' TERM
   # Deduplicate with Bash builtins, without a process substitution/awk pipeline.
-  for domain in "${SNI_LIST[@]}" "${N_SNI:-}"; do
+  for domain in "${candidates[@]}" "${N_SNI:-}"; do
     [[ -n $domain ]] || continue
     for seen in "${domains[@]}"; do
       [[ $seen != "$domain" ]] || continue 2
@@ -150,7 +178,8 @@ sni_scan() ( # 子 shell 隔离临时目录与信号处理；并发数 1–4
     domains+=("$domain")
   done
   ui_section '测试进度' >&2
-  printf '  候选 %s 个 · 并发 %s · 每域名 3 次\n' "${#domains[@]}" "$concurrency" >&2
+  printf '  %s · 候选 %s 个 · 并发 %s · 每域名 3 次\n' "$label" "${#domains[@]}" "$concurrency" >&2
+  [[ -z ${N_SNI:-} ]] || printf '  包含当前 SNI：%s（自动去重）\n' "$N_SNI" >&2
   printf '  单次超时 2s + 强制结束宽限 1s · TLS 1.3 / h2 / 有效证书\n\n' >&2
   for domain in "${domains[@]}"; do
     printf -v SNI_PROGRESS_LABEL '%02d/%02d' "$((i + 1))" "${#domains[@]}"
@@ -188,10 +217,10 @@ sni_valid_domain() {
 sni_show_results() { # 已排序的 TSV 结果；仅展示，不修改节点
   local RED GREEN YELLOW CYAN PLAIN BOLD DIM
   local ok ms domain state i=0 latency rank color total=0 partial=0 failed=0
-  local best="" best_ms=""
+  local best="" best_ms="" SNI_CATEGORY
   ui_colors 1
   ui_section '优选结果'
-  printf '  排名  %-38s  %14s  %10s  状态\n' '域名' '平均耗时' '成功率'
+  printf '  排名  %-38s  %14s  %10s  状态 / 分类\n' '域名' '平均耗时' '成功率'
   printf '  %s────────────────────────────────────────────────────────────────────────────%s\n' "$DIM" "$PLAIN"
   while IFS=$'\t' read -r ok ms domain state; do
     total=$((total + 1))
@@ -199,44 +228,61 @@ sni_show_results() { # 已排序的 TSV 结果；仅展示，不修改节点
     ((ok == 0)) || latency="${ms} ms"
     if ((ok == 3)); then
       i=$((i + 1)); rank=$i; color=$GREEN
-      if ((i == 1)); then state="推荐"; best=$domain; best_ms=$ms; fi
+      if ((i == 1)); then state="本轮最快"; best=$domain; best_ms=$ms; fi
     elif ((ok > 0)); then
       partial=$((partial + 1)); color=$YELLOW
     else
       failed=$((failed + 1))
     fi
     [[ $domain != "${N_SNI:-}" ]] || state="$state / 当前"
-    printf '  %s%-4s%s  %-36s  %10s  %7s  %s%s%s\n' \
-      "$color" "$rank" "$PLAIN" "$domain" "$latency" "$ok/3" "$color" "$state" "$PLAIN"
+    sni_domain_info "$domain"
+    printf '  %s%-4s%s  %-36s  %10s  %7s  %s%s%s / [%s]\n' \
+      "$color" "$rank" "$PLAIN" "$domain" "$latency" "$ok/3" "$color" "$state" "$PLAIN" "$SNI_CATEGORY"
   done <<< "$1"
   printf '\n  共 %s 个 · 通过 %s · 不稳定 %s · 未通过 %s\n' "$total" "$i" "$partial" "$failed"
   if [[ -n $best ]]; then
-    printf '  %s推荐%s  %s · %s ms\n' "$GREEN$BOLD" "$PLAIN" "$best" "$best_ms"
+    printf '  %s本轮握手最快%s  %s · %s ms\n' "$GREEN$BOLD" "$PLAIN" "$best" "$best_ms"
   fi
   printf '  %s仅 3/3 通过的域名参与排名，按平均握手耗时升序排列。\n' "$DIM"
   printf '  耗时为本服务器到目标站的连接及握手耗时，不代表客户端实际速度。%s\n' "$PLAIN"
 }
 
 sni_test() {
-  local results N_SNI="" SNI_CONCURRENCY=${SNI_CONCURRENCY:-4}
+  local results in setup=1 N_SNI="" SNI_SCAN_MODE=quick SNI_CONCURRENCY=${SNI_CONCURRENCY:-4}
   ui_title 'SNI 优选测试'
   if ! has_gnu_timeout || ! sni_now_ms >/dev/null; then
     warn "域名优选需要 GNU timeout（coreutils）和毫秒计时支持（Bash 5 或 GNU date）"
     return 0
   fi
-  SNI_CONCURRENCY=$(sni_ask_concurrency) || { UI_SKIP_PAUSE=1; return 0; }
-  if ! results=$(sni_scan); then
-    warn "优选未完成，请稍后重试"
-    return 0
-  fi
-  sni_show_results "$results"
-  if ! awk -F '\t' '$1 == 3 { found=1 } END { exit !found }' <<< "$results"; then
-    warn "没有稳定通过的域名，请稍后重试"
-  fi
+  while true; do
+    if ((setup)); then
+      SNI_SCAN_MODE=$(sni_ask_mode) || { UI_SKIP_PAUSE=1; return 0; }
+      SNI_CONCURRENCY=$(sni_ask_concurrency) || { UI_SKIP_PAUSE=1; return 0; }
+      setup=0
+    fi
+    if ! results=$(sni_scan); then
+      warn "优选未完成，请稍后重试"
+      return 0
+    fi
+    sni_show_results "$results"
+    if ! awk -F '\t' '$1 == 3 { found=1 } END { exit !found }' <<< "$results"; then
+      warn "没有稳定通过的域名，请稍后重试"
+    fi
+    while true; do
+      in=$(ask 'r 重测，s 切换范围，0 返回' 0) || { UI_SKIP_PAUSE=1; return 0; }
+      case $in in
+        0|q|Q) UI_SKIP_PAUSE=1; return 0 ;;
+        r|R) break ;;
+        s|S) setup=1; break ;;
+        *) warn '请输入 r、s 或 0' ;;
+      esac
+    done
+  done
 }
 
 pick_sni() { # -> PICKED；取消/输入结束时返回失败，调用者不保存配置
-  local mode in cand i results ok ms domain state def
+  local mode in cand i results ok ms domain state def setup=1 SNI_CATEGORY
+  local SNI_SCAN_MODE=quick
   local SNI_CONCURRENCY=${SNI_CONCURRENCY:-4}
   local ranked=()
   PICKED=""
@@ -251,7 +297,11 @@ pick_sni() { # -> PICKED；取消/输入结束时返回失败，调用者不保�
           warn "域名优选需要 GNU timeout（coreutils）和毫秒计时支持（Bash 5 或 GNU date）；可手动选择"
           mode=2; continue
         fi
-        SNI_CONCURRENCY=$(sni_ask_concurrency) || return 1
+        if ((setup)); then
+          SNI_SCAN_MODE=$(sni_ask_mode) || return 1
+          SNI_CONCURRENCY=$(sni_ask_concurrency) || return 1
+          setup=0
+        fi
         if ! results=$(sni_scan); then
           warn "优选未完成，可手动选择"; mode=2; continue
         fi
@@ -263,30 +313,35 @@ pick_sni() { # -> PICKED；取消/输入结束时返回失败，调用者不保�
         def=""; ((${#ranked[@]} == 0)) || def=1
         [[ -n $def ]] || warn "没有稳定通过的域名；可重测或手动输入，不会自动使用失败域名"
         while true; do
-          read -rp "选择排名${def:+ [回车选 1]}，r 重测，m 手动，0 取消: " in || return 1
+          read -rp "选择排名${def:+ [回车选 1]}，r 重测，s 切换范围，m 手动，0 取消: " in || return 1
           in=${in:-$def}
           case $in in
-            0) return 1 ;;
+            0|q|Q) return 1 ;;
             r|R) break ;;
+            s|S) setup=1; break ;;
             m|M) mode=2; break ;;
           esac
           if [[ $in =~ ^[0-9]{1,3}$ ]] && ((10#$in >= 1 && 10#$in <= ${#ranked[@]})); then
             PICKED=${ranked[10#$in - 1]}; info "已选择 $PICKED"; return 0
           fi
-          warn "请输入有效排名，或选择重测/手动输入"
+          warn "请输入有效排名，或选择重测/切换范围/手动输入"
         done ;;
       2)
         echo "内置 SNI 候选（输入序号或域名；r 返回优选；0 取消）:"
-        for i in "${!SNI_LIST[@]}"; do printf '  %2d) %s\n' $((i + 1)) "${SNI_LIST[$i]}"; done
+        for i in "${!SNI_LIST[@]}"; do
+          sni_domain_info "${SNI_LIST[$i]}"
+          printf '  %2d) %-36s [%s]\n' $((i + 1)) "${SNI_LIST[$i]}" "$SNI_CATEGORY"
+        done
         read -rp "请选择: " in || return 1
-        case $in in 0) return 1 ;; r|R) mode=1; continue ;; esac
+        case $in in 0|q|Q) return 1 ;; r|R) mode=1; setup=1; continue ;; esac
         if [[ $in =~ ^[0-9]{1,3}$ ]] && ((10#$in >= 1 && 10#$in <= ${#SNI_LIST[@]})); then
           cand=${SNI_LIST[10#$in - 1]}
         else
           cand=$(printf '%s' "$in" | tr '[:upper:]' '[:lower:]')
         fi
         sni_valid_domain "$cand" || { warn "请输入有效域名（不含协议、端口或路径）"; continue; }
-        info "检测 $cand 的 TLS 1.3、h2 和证书..."
+        sni_domain_info "$cand"
+        info "检测 $cand [$SNI_CATEGORY] 的 TLS 1.3、h2 和证书..."
         if ! check_sni "$cand"; then
           warn "$cand 检测未通过：$SNI_FAILURE，Reality 可能无法正常工作"
           confirm "仍然使用?" n || continue

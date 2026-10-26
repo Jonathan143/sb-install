@@ -5,6 +5,32 @@ ROOT=$(mktemp -d) || exit 1
 trap 'rm -rf "$ROOT"' EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
+# The quick set is a curated subset; every built-in domain has display metadata.
+(
+  [[ ${#SNI_LIST[@]} == 26 && ${#SNI_QUICK_LIST[@]} == 10 ]] || fail 'candidate counts'
+  [[ $(printf '%s\n' "${SNI_LIST[@]}" | sort -u | wc -l) -eq 26 ]] || fail 'duplicate catalog domain'
+  [[ $(printf '%s\n' "${SNI_QUICK_LIST[@]}" | sort -u | wc -l) -eq 10 ]] || fail 'duplicate quick domain'
+  for domain in "${SNI_LIST[@]}"; do
+    sni_valid_domain "$domain" || fail "invalid catalog domain: $domain"
+    sni_domain_info "$domain"
+    [[ -n $SNI_CATEGORY && $SNI_CATEGORY != 自定义域名 ]] || fail "missing category: $domain"
+  done
+  for domain in "${SNI_QUICK_LIST[@]}"; do
+    [[ " ${SNI_LIST[*]} " == *" $domain "* ]] || fail "quick domain missing from catalog: $domain"
+  done
+  for domain in www.u-tokyo.ac.jp www.nus.edu.sg www.stanford.edu www.ox.ac.uk \
+    dl-cdn.alpinelinux.org www.python.org pypi.org addons.mozilla.org \
+    www.lovelive-anime.jp www.cathaypacific.com; do
+    [[ " ${SNI_QUICK_LIST[*]} " == *" $domain "* ]] || fail "missing agreed quick domain: $domain"
+  done
+  sni_domain_info www.u-tokyo.ac.jp
+  [[ $SNI_CATEGORY == 日本高校 ]] || fail 'university category'
+  sni_domain_info cpan.org
+  [[ $SNI_CATEGORY == 'Perl 包仓库' ]] || fail 'package repository category'
+  sni_domain_info custom.example
+  [[ $SNI_CATEGORY == 自定义域名 ]] || fail 'unknown domain retained stale category'
+) || exit 1
+
 # BusyBox timeout being present must not suppress the GNU dependency install.
 (
   detect_pkg() { PKG=apk; }
@@ -115,7 +141,7 @@ fi
 ) || exit 1
 
 # Both serial and parallel collection deduplicate and include the current SNI.
-unset SNI_CONCURRENCY
+unset SNI_CONCURRENCY SNI_SCAN_MODE
 [[ $(sni_concurrency) == 4 ]] || fail 'default concurrency'
 for invalid in 0 5 -1 bogus; do
   [[ $(SNI_CONCURRENCY=$invalid sni_concurrency) == 4 ]] || fail 'invalid concurrency'
@@ -127,23 +153,73 @@ for input in 0 q; do
   if sni_ask_concurrency <<< "$input"; then fail 'prompt cancellation'; fi
 done
 if sni_ask_concurrency < /dev/null; then fail 'prompt EOF'; fi
+[[ $(sni_ask_mode <<< '') == quick ]] || fail 'default quick mode'
+[[ $(sni_ask_mode <<< $'bad\n3\n2') == all ]] || fail 'mode validation'
+[[ $(SNI_SCAN_MODE=all sni_ask_mode <<< '') == all ]] || fail 'remember selected mode'
+for input in 0 q; do
+  if sni_ask_mode <<< "$input"; then fail 'mode cancellation'; fi
+done
+if sni_ask_mode < /dev/null; then fail 'mode EOF'; fi
 (
   timeout() { echo 'timeout (GNU coreutils) test'; }
   sni_now_ms() { echo 1000; }
   sni_scan() {
-    echo "$SNI_CONCURRENCY" >> "$ROOT/standalone-scans"
+    echo "$SNI_SCAN_MODE:$SNI_CONCURRENCY" >> "$ROOT/standalone-scans"
+    [[ -z $N_SNI ]] || fail 'standalone included a node SNI'
     printf '3\t20\tfast.example\t通过\n'
   }
-  sni_test <<< '' > /dev/null
-  sni_test <<< 2 > /dev/null
+  N_SNI=stale.example
+  sni_test <<< $'\n\n0' > /dev/null
+  sni_test <<< $'2\n2\nr\ns\n1\n3\n0' > /dev/null
   sni_test <<< q > /dev/null
   [[ $UI_SKIP_PAUSE == 1 ]] || fail 'cancel paused'
+  sni_test <<< $'1\nq' > /dev/null
+  sni_test <<< 1 > /dev/null
   sni_test < /dev/null > /dev/null
-  [[ $(cat "$ROOT/standalone-scans") == $'4\n2' ]] || fail 'standalone prompt dispatch'
+  [[ $(cat "$ROOT/standalone-scans") == $'quick:4\nall:2\nall:2\nquick:3' ]] || fail 'standalone prompt dispatch'
+  [[ $N_SNI == stale.example && -z ${SNI_SCAN_MODE:-} ]] || fail 'standalone leaked scan state'
 ) || exit 1
+
+# Real scan dispatch uses the selected scope and only appends an absent current SNI.
+(
+  SNI_CONCURRENCY=4
+  sni_measure() { printf '3\t20\t%s\t通过\n' "$1"; }
+  for mode in quick all; do
+    SNI_SCAN_MODE=$mode
+    [[ $mode != quick ]] || expected=10
+    [[ $mode != all ]] || expected=26
+    for N_SNI in '' www.u-tokyo.ac.jp custom.example; do
+      count=$expected
+      [[ $N_SNI != custom.example ]] || count=$((count + 1))
+      result=$(sni_scan 2> "$ROOT/scope-progress") || fail 'scope scan'
+      [[ $(wc -l <<< "$result") -eq $count ]] || fail "wrong scope count: $mode/$N_SNI"
+      [[ $result == *www.u-tokyo.ac.jp* ]] || fail 'missing quick university'
+      if [[ $mode == quick ]]; then
+        [[ $result != *www.kyoto-u.ac.jp* ]] || fail 'quick scan included all-only domain'
+      else
+        [[ $result == *www.kyoto-u.ac.jp* && $result == *$'\tcpan.org\t'* && $result == *$'\twww.cpan.org\t'* ]] || fail 'full scan missed candidates'
+      fi
+      grep -q '\[日本高校\]' "$ROOT/scope-progress" || fail 'progress category missing'
+      awk -F '\t' 'NF != 4 { exit 1 }' <<< "$result" || fail 'metadata leaked into TSV'
+    done
+  done
+  sni_show_results "$result" > "$ROOT/results"
+  grep -q '本轮最快.*当前.*\[日本高校\]\|\[日本高校\]' "$ROOT/results" || fail 'result category missing'
+  grep -q '\[自定义域名\]' "$ROOT/results" || fail 'custom result category missing'
+  sni_measure() { fail 'invalid scope started a probe'; }
+  SNI_SCAN_MODE=bad
+  if sni_scan; then fail 'accepted invalid scope'; fi
+) || exit 1
+
+(
+  sni_progress www.u-tokyo.ac.jp 3 20 通过 2> "$ROOT/completed-progress"
+  grep -q '\[日本高校\].*3/3.*通过' "$ROOT/completed-progress" || fail 'completed progress category missing'
+) || exit 1
+
 for concurrency in 1 4; do
 (
   SNI_CONCURRENCY=$concurrency
+  SNI_SCAN_MODE=all
   SNI_LIST=(slow.example partial.example failed.example fast.example slow.example)
   N_SNI=current.example
   sni_measure() {
@@ -194,10 +270,11 @@ run_pick() (
   sni_scan() {
     if [[ $scenario == retest ]]; then
       [[ $SNI_CONCURRENCY == 2 ]] || fail 'retest lost selected concurrency'
+      [[ $SNI_SCAN_MODE == all ]] || fail 'retest lost selected scope'
     else
       [[ $SNI_CONCURRENCY == 4 ]] || fail 'picker default concurrency'
     fi
-    echo scan >> "$ROOT/scans"
+    echo "$SNI_SCAN_MODE" >> "$ROOT/scans"
     if [[ $scenario == all-failed ]]; then
       printf '0\t0\tfailed.example\t超时\n'
     else
@@ -211,35 +288,47 @@ run_pick() (
   }
   rm -f "$ROOT/scans" "$ROOT/manual"
   case $scenario in
-    default) input=$'\n\n\n' ;;
-    second) input=$'1\n\n02\n' ;;
-    invalid) input=$'1\n\n3\n9999999999999999999\n08\n1\n' ;;
-    retest) input=$'1\n2\nr\n\n1\n' ;;
+    default) input=$'\n\n\n\n' ;;
+    second) input=$'1\n\n\n02\n' ;;
+    invalid) input=$'1\n\n\n3\n9999999999999999999\n08\n1\n' ;;
+    retest) input=$'1\n2\n2\nr\n1\n' ;;
+    all) input=$'1\n2\n\n1\n' ;;
+    switch) input=$'1\n\n\ns\n2\n\n1\n' ;;
     manual) input=$'2\nhttps://example.com\nCUSTOM.EXAMPLE\n' ;;
     manual-index) input=$'2\n02\n' ;;
     manual-failed) input=$'2\ncustom.example\nn\n0\n' ;;
     manual-override) input=$'2\ncustom.example\ny\n' ;;
-    all-failed) input=$'1\n\n\n0\n' ;;
+    all-failed) input=$'1\n\n\n\n0\n' ;;
     cancel) input=$'0\n' ;;
+    cancel-scope) input=$'1\nq\n' ;;
+    cancel-concurrency) input=$'1\n2\nq\n' ;;
+    eof-scope) input=$'1\n' ;;
+    eof-concurrency) input=$'1\n2\n' ;;
     eof) input='' ;;
   esac
   printf '%s' "$input" > "$ROOT/input"
   pick_sni < "$ROOT/input" > "$ROOT/output" 2>&1 || rc=$?
   case $scenario in
-    cancel|eof|all-failed|manual-failed)
+    cancel*|eof*|all-failed|manual-failed)
       [[ $rc != 0 && -z $PICKED ]] || fail "$scenario chose $PICKED" ;;
     *) [[ $rc == 0 ]] || fail "$scenario failed" ;;
   esac
   case $scenario in
-    default|invalid|retest|manual-index) [[ $PICKED == fast.example ]] || fail "$scenario chose $PICKED" ;;
+    default|invalid|retest|manual-index|all|switch) [[ $PICKED == fast.example ]] || fail "$scenario chose $PICKED" ;;
     second) [[ $PICKED == slow.example ]] || fail 'ranking index mapped to original list' ;;
     manual|manual-override) [[ $PICKED == custom.example ]] || fail 'custom domain not normalized' ;;
   esac
-  if [[ $scenario == retest ]]; then [[ $(wc -l < "$ROOT/scans") -eq 2 ]] || fail 'missing retest'; fi
+  case $scenario in
+    default) [[ $(cat "$ROOT/scans") == quick ]] || fail 'picker default scope' ;;
+    all) [[ $(cat "$ROOT/scans") == all ]] || fail 'picker full scope' ;;
+    retest) [[ $(cat "$ROOT/scans") == $'all\nall' ]] || fail 'missing retest' ;;
+    switch) [[ $(cat "$ROOT/scans") == $'quick\nall' ]] || fail 'scope switch' ;;
+    cancel*|eof*) [[ ! -f $ROOT/scans && ! -f $ROOT/manual ]] || fail 'cancelled picker started a probe' ;;
+  esac
   if [[ $scenario == default ]]; then grep -q '当前' "$ROOT/output" || fail 'current SNI not marked'; fi
   if [[ $scenario == manual ]]; then [[ $(cat "$ROOT/manual") == custom.example ]] || fail 'invalid domain probed'; fi
 )
-for scenario in default second invalid retest manual manual-index manual-failed manual-override all-failed cancel eof; do
+for scenario in default second invalid retest all switch manual manual-index manual-failed manual-override all-failed cancel cancel-scope cancel-concurrency eof eof-scope eof-concurrency; do
   run_pick "$scenario" || exit 1
 done
 
