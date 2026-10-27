@@ -57,6 +57,7 @@ curl -fsSL -o /usr/local/bin/sb ${GH_PROXY}https://github.com/Jonathan143/sb-ins
 | 命令 | 功能 |
 |---|---|
 | `sb` | 主菜单 |
+| `sb config` | 查看 sing-box 运行配置文件 |
 | `sb add` | 新增节点 |
 | `sb list` | 列出所有节点和监听状态 |
 | `sb info [编号]` | 查看分享链接、二维码、客户端 outbound JSON |
@@ -69,18 +70,20 @@ curl -fsSL -o /usr/local/bin/sb ${GH_PROXY}https://github.com/Jonathan143/sb-ins
 | `sb route` / `sb route show` | 出口与分流管理 / 查看规则（凭据隐藏） |
 | `sb cert` | 查看证书到期时间，强制续期 |
 | `sb core` | 安装或更新 sing-box 内核 |
-| `sb update` | 更新 sb 脚本本身 |
+| `sb update` / `sb update --beta` | 更新 sb 脚本本身 |
 | `sb uninstall` | 卸载 |
 
-在主菜单选择「11 → 2」更新脚本成功后，按回车会直接重新运行新版 `sb`。使用 `sb update` 命令则在更新完成后退出。
+在主菜单选择「13 → 2」更新脚本成功后，按回车会直接重新运行新版 `sb`。使用 `sb update` 命令则在更新完成后退出。
 更新会检查文件非空、版本号、Bash 语法和独立脚本结构；Release 下载地址还必须通过同目录 `SHA256SUMS` 校验。下载、校验或安装失败会保留原命令。自定义下载地址需提供完整的独立构建产物。
+主菜单选择「7 · 查看运行配置」，或运行 `sb config`，按文件展示格式化的 JSON。接管模式显示 `conf.d/*.json`，共存模式还会显示 `config.json`。服务未运行时也可查看。显示的是磁盘当前内容，并非进程内存快照；手动修改后未重启的内容可能尚未生效。
+
 主菜单也会检查正在运行与磁盘安装的脚本版本；版本不一致时会显示两个版本，并提示按回车重新加载。已经运行的旧版脚本需先退出并重新运行一次，才能启用此检查。
 
 最新版更新与指定版本安装都先备份内核和配置，再校验配置、重启并确认服务运行；失败会恢复原内核和配置，并尝试恢复更新前的服务状态。内置 ACME 配置会随目标内核版本重新生成：1.14+ 使用 `tls.certificate_provider`，较旧版本保留 `tls.acme`，共存模式的旧 `config.json` 不会被改写。迁移格式见 [sing-box 官方迁移说明](https://sing-box.sagernet.org/migration/#migrate-inline-acme-to-certificate-provider)。
 
 ## 出口与域名/IP 分流
 
-运行 `sb route`，或主菜单选择 **9 → 出口与分流**：
+运行 `sb route`，或主菜单选择 **10 → 出口与分流**：
 
 1. 选择「粘贴链接新增出口」，粘贴完整 `vless://...` 或 `ss://...` 链接（输入时明文显示），检查解析摘要并命名。
 2. 选择「新增规则」，填写精确域名、域名后缀或 IP/CIDR，多个值用英文逗号分隔，再按序号选择出口（`0` / `q` 返回）。
@@ -297,7 +300,11 @@ bash scripts/release.sh
 - 当前测试版选择「转正式版」会发布 `1.4.0`，不额外增加补丁号。选项 1–3 仍按基础版本递增补丁、次版本或主版本。
 - 版本先比较 `X.Y.Z`，再按 `alpha < beta < rc < 正式版` 和测试序号比较，必须高于已有版本标签；不支持对已发布正式版补发同基础版本的测试版。
 
-测试版本自动标记为 GitHub **Pre-release**，明确设置 `--latest=false`，不会替换稳定版 `releases/latest/download/sb.sh` 下载入口。测试版通过具体标签链接安装，例如 `https://github.com/Jonathan143/sb-install/releases/download/v1.4.0-beta.1/sb.sh`（示例，需替换为实际已发布标签）。`SCRIPT_URL` 指向固定测试版地址时不会自动跟随下一个测试版，升级需改为新标签地址。较旧脚本的更新校验可能不接受测试版版本号，应先升级到支持测试版校验的脚本，或按安装命令直接下载指定测试版。
+测试版本自动标记为 GitHub **Pre-release**，明确设置 `--latest=false`，不会替换稳定版 `releases/latest/download/sb.sh` 下载入口。
+
+使用 `sb update --beta` 自动查询本仓库最新测试版（包含 `alpha`、`beta`、`rc`，按版本号排序），确认后更新。当前版本相同或更高时不重复安装、不降级。该命令会校验发布文件和 SHA256，支持 `GH_PROXY` 加速文件下载；发布列表通过 GitHub API 查询。它不会更改已配置的 `SCRIPT_URL`，不带参数的 `sb update` 仍使用原更新地址。
+
+尚不支持 `--beta` 的旧版本需要先指定已发布的新版本地址升级一次：`SCRIPT_URL=https://github.com/Jonathan143/sb-install/releases/download/vX.Y.Z-beta.N/sb.sh sb update`（替换为实际发布标签），之后即可使用 `sb update --beta`。固定标签地址不会自动跟随下一个测试版。
 
 发布前会同步远程标签、检查分支和版本、运行测试。确认后自动修改 `SB_VERSION`（如果需要）、提交版本变更、创建附注标签，并原子推送 `main` 和标签到 `origin`。本地已有但尚未推送的提交也会一并推送，确认前会显示列表。需要本地 Git 已配置提交身份，并拥有仓库推送权限。
 
@@ -338,7 +345,7 @@ curl -fsSL "$SCRIPT_URL" -o /usr/local/bin/sb && chmod +x /usr/local/bin/sb && S
 
 ### 系统 DNS
 
-主菜单选择「10 · 系统 DNS 配置」，或运行 `sb dns`。进入后显示当前配置；可选择 Cloudflare、Google、两者组合，或手动输入 1–3 个以空格分隔的 IPv4 / IPv6 地址（IPv6 使用纯十六进制形式，不含接口标识）。`sb dns show` 仅查看，无需安装 sing-box 或联网安装依赖。
+主菜单选择「11 · 系统 DNS 配置」，或运行 `sb dns`。进入后显示当前配置；可选择 Cloudflare、Google、两者组合，或手动输入 1–3 个以空格分隔的 IPv4 / IPv6 地址（IPv6 使用纯十六进制形式，不含接口标识）。`sb dns show` 仅查看，无需安装 sing-box 或联网安装依赖。
 
 确认修改后写入静态 `/etc/resolv.conf`，保留 search、domain、options；如果原文件是符号链接，会替换链接而不修改链接目标。首次修改前将原文件或链接保存至 `/etc/resolv.conf.sb-backup`，菜单可恢复。DHCP、NetworkManager、云初始化等仍可能覆盖此文件；此功能不修改这些服务的配置。只读文件或容器挂载点无法替换时会报错。
 

@@ -7,7 +7,7 @@ done
 # Keep expected failure scenarios and simulated prompts out of release output.
 log=$(mktemp)
 trap 'rm -f "$log"' EXIT
-for test in acme lock core-install core-update script-update transaction builtin-acme sni multiplex protocols routing release build ui dns hysteria2; do
+for test in acme lock service-config core-install core-update script-update transaction builtin-acme sni multiplex protocols routing release build ui dns hysteria2; do
   if bash "tests/$test.sh" > "$log" 2>&1; then
     printf 'PASS: %s\n' "$test"
     LC_ALL=C sed -n '/^SKIP:/p' "$log"

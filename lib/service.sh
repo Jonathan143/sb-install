@@ -27,6 +27,44 @@ show_status() {
   done
 }
 
+show_runtime_config() {
+  local file arg path i result=0
+  local SB_ARGS=() files=()
+  ui_title 'sing-box 运行配置'
+  if svc is-active; then
+    printf '  服务：运行中\n'
+  else
+    printf '  服务：未运行（显示当前配置文件）\n'
+  fi
+  printf '  以下为服务配置文件的磁盘内容，未重启的修改可能尚未加载。\n'
+  # Use the same source selection as the generated service. In takeover mode
+  # an old config.json is intentionally excluded; coexist mode includes it.
+  sb_args
+  for ((i=0; i<${#SB_ARGS[@]}; i++)); do
+    arg=${SB_ARGS[i]}
+    case $arg in
+      -c) i=$((i + 1)); files+=("${SB_ARGS[i]}") ;;
+      -C)
+        i=$((i + 1)); path=${SB_ARGS[i]}
+        for file in "$path"/*.json; do
+          [[ -f $file ]] && files+=("$file")
+        done ;;
+    esac
+  done
+  if ((${#files[@]} == 0)); then
+    info '暂无配置文件'
+    return 0
+  fi
+  for file in "${files[@]}"; do
+    ui_section "$file"
+    if ! jq . "$file"; then
+      err "无法读取或解析配置文件: $file"
+      result=1
+    fi
+  done
+  return "$result"
+}
+
 show_log() {
   if has_systemd; then
     if [[ ${1:-} == -f ]]; then journalctl -u "$SB_SERVICE" -f; else journalctl -u "$SB_SERVICE" -n 80 --no-pager; fi

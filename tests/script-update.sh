@@ -155,3 +155,65 @@ sed 's/9.9.9/9.9.9-beta.1/g' "$ROOT/download" > "$ROOT/preview"
   echo old-menu-returned
 ) <<< '' > "$ROOT/preview-output" 2>&1 || fail 'preview menu reload failed'
 grep -q '^new-script$' "$ROOT/preview-output" || fail 'preview version not detected by menu'
+
+# Preview discovery must paginate, ignore draft/stable releases, and use version
+# ordering rather than API order. Downloads retain checksum and tag validation.
+for scenario in success current newer cancel mismatch checksum missing empty api invalid; do
+  (
+    SB_VERSION=1.4.0-beta.1
+    SCRIPT_URL=https://example.invalid/configured
+    GH_PROXY=https://proxy.invalid/
+    SB_CMD="$ROOT/beta-command"
+    printf 'existing-command\n' > "$SB_CMD"
+    case $scenario in current) SB_VERSION=1.4.0-beta.12 ;; newer) SB_VERSION=1.4.0 ;; esac
+    sed 's/9.9.9/1.4.0-beta.12/' "$ROOT/download" > "$ROOT/beta-download"
+    [[ $scenario != mismatch ]] || cp "$ROOT/download" "$ROOT/beta-download"
+    sum=$(openssl dgst -sha256 "$ROOT/beta-download"); sum=${sum##* }
+    curl() {
+      local url=$2
+      [[ $url != --connect-timeout ]] || url=$6
+      case $url in
+        *api.github.com*)
+          [[ $scenario != api ]] || return 22
+          if [[ $scenario == invalid ]]; then echo '{}'; return; fi
+          if [[ $scenario == empty ]]; then echo '[]'; return; fi
+          if [[ $url == *'page=1' ]]; then
+            jq -n '[range(100) | {draft:false,prerelease:false,tag_name:"v99.0.0"}]'
+          else
+            jq -n --arg scenario "$scenario" '
+              [{draft:false,prerelease:true,tag_name:"v1.4.0-beta.2"},
+               {draft:false,prerelease:true,tag_name:"v1.4.0-beta.12"},
+               {draft:true,prerelease:true,tag_name:"v2.0.0-rc.1"}] |
+              map(. + {assets:(if $scenario == "missing" then [] else [{name:"sb.sh"},{name:"SHA256SUMS"}] end)})'
+          fi ;;
+        */SHA256SUMS)
+          [[ $url == https://proxy.invalid/https://github.com/Jonathan143/sb-install/releases/download/v1.4.0-beta.12/SHA256SUMS ]] || fail 'wrong checksum URL'
+          if [[ $scenario == checksum ]]; then printf '%064d  sb.sh\n' 0 > "$4"
+          else printf '%s  sb.sh\n' "$sum" > "$4"; fi ;;
+        *)
+          [[ $url == https://proxy.invalid/https://github.com/Jonathan143/sb-install/releases/download/v1.4.0-beta.12/sb.sh ]] || fail 'wrong preview URL'
+          cp "$ROOT/beta-download" "$4" ;;
+      esac
+    }
+    confirm() {
+      case $scenario in success) return 0 ;; cancel) return 1 ;; *) fail 'unexpected preview confirmation' ;; esac
+    }
+    save_conf() { [[ $SCRIPT_URL == https://example.invalid/configured ]] || fail 'preview changed configured URL'; }
+    result=0
+    update_script --beta > "$ROOT/beta-output" 2>&1 || result=$?
+    case $scenario in
+      success) [[ $result == 0 ]] && cmp "$ROOT/beta-download" "$SB_CMD" || fail 'preview install failed' ;;
+      current|newer|cancel) [[ $result == 0 ]] || fail 'preview no-op failed' ;;
+      *) [[ $result != 0 ]] || fail 'preview failure accepted' ;;
+    esac
+    if [[ $scenario != success ]]; then
+      [[ $(cat "$SB_CMD") == existing-command ]] || fail 'preview failure replaced installed script'
+    fi
+    [[ $SCRIPT_URL == https://example.invalid/configured ]] || fail 'preview changed caller URL'
+  ) || fail "preview scenario $scenario"
+done
+script_version_newer 1.4.0-rc.1 1.4.0-beta.12 || fail 'preview stage ordering'
+script_version_newer 1.5.0-alpha.1 1.4.0 || fail 'preview base version ordering'
+if main update --unknown >/dev/null 2>&1; then fail 'unknown update argument accepted'; fi
+if main update --beta extra >/dev/null 2>&1; then fail 'extra update argument accepted'; fi
+echo 'PASS: latest preview updates, pagination, version ordering and failure protection'

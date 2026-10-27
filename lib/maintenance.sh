@@ -152,8 +152,54 @@ verify_script_checksum() {
   }
 }
 
+# Compare supported release versions using semantic prerelease ordering.
+script_version_newer() {
+  jq -en --arg a "$1" --arg b "$2" '
+    def key: capture("^(?<major>[0-9]+)\\.(?<minor>[0-9]+)\\.(?<patch>[0-9]+)(-(?<stage>alpha|beta|rc)\\.(?<serial>[0-9]+))?$") |
+      [.major|tonumber] + [.minor|tonumber] + [.patch|tonumber] +
+      [({alpha:0,beta:1,rc:2}[.stage // ""] // 3), (.serial // "0" | tonumber)];
+    ($a|key) > ($b|key)' >/dev/null
+}
+script_latest_preview() {
+  local page=1 response candidates='[]' batch tag latest=''
+  while true; do
+    response=$(curl -fsSL --connect-timeout 10 --max-time 30 "https://api.github.com/repos/Jonathan143/sb-install/releases?per_page=100&page=$page") || {
+      err '无法查询测试版发布列表，请检查网络或 GitHub API 限流'; return 1;
+    }
+    jq -e 'type == "array"' <<<"$response" >/dev/null 2>&1 || { err '测试版发布列表格式无效'; return 1; }
+    batch=$(jq -c '[.[] | select(.draft == false and .prerelease == true) |
+      select(.tag_name | test("^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)-(alpha|beta|rc)\\.(0|[1-9][0-9]*)$")) |
+      {tag:.tag_name, ready: (any(.assets[]?; .name == "sb.sh") and any(.assets[]?; .name == "SHA256SUMS"))}]' <<<"$response") || return 1
+    candidates=$(jq -cn --argjson a "$candidates" --argjson b "$batch" '$a+$b') || return 1
+    [[ $(jq length <<<"$response") == 100 ]] || break
+    page=$((page + 1))
+  done
+  while IFS= read -r tag; do
+    if [[ -z $latest ]] || script_version_newer "${tag#v}" "${latest#v}"; then latest=$tag; fi
+  done < <(jq -r '.[].tag' <<<"$candidates")
+  [[ -n $latest ]] || { err '尚无已发布的测试版'; return 1; }
+  jq -e --arg tag "$latest" 'any(.[]; .tag == $tag and .ready)' <<<"$candidates" >/dev/null || {
+    err "测试版 $latest 的发布文件尚未齐全，请稍后重试"; return 1;
+  }
+  printf '%s\n' "$latest"
+}
+
 update_script() {
-  local tmp new
+  local tmp new expected='' original_url=$SCRIPT_URL
+  local SCRIPT_URL=$SCRIPT_URL
+  case ${1:-} in
+    ''|restart) ;;
+    --beta)
+      expected=$(script_latest_preview) || return 1
+      expected=${expected#v}
+      if ! script_version_newer "$expected" "$SB_VERSION"; then
+        info "当前 v${SB_VERSION}，最新测试版 v${expected}，无需更新"
+        return 0
+      fi
+      SCRIPT_URL="${GH_PROXY}https://github.com/Jonathan143/sb-install/releases/download/v${expected}/sb.sh"
+      ;;
+    *) err '用法: sb update [--beta]'; return 1 ;;
+  esac
   [[ -n $SCRIPT_URL ]] || { err "未设置 SCRIPT_URL，无法在线更新。可用 SCRIPT_URL=<直链> sb update 指定一次"; return 1; }
   tmp=$(mktemp) || return 1
   curl -fsSL "$SCRIPT_URL" -o "$tmp" || { err "下载失败"; rm -f "$tmp"; return 1; }
@@ -161,6 +207,9 @@ update_script() {
     rm -f "$tmp"; return 1
   fi
   new=$(sed -n 's/^SB_VERSION="\(.*\)"/\1/p' "$tmp" | head -n1)
+  if [[ -n $expected && $new != "$expected" ]]; then
+    rm -f "$tmp"; err '下载脚本版本与测试版标签不一致，已取消更新'; return 1
+  fi
   info "当前 v${SB_VERSION}，远程 v${new:-?}"
   confirm "更新脚本?" y || { rm -f "$tmp"; return 0; }
   if ! install -m 755 "$tmp" "$SB_CMD.new" || ! mv -f "$SB_CMD.new" "$SB_CMD"; then
@@ -169,6 +218,7 @@ update_script() {
     return 1
   fi
   rm -f "$tmp"
+  SCRIPT_URL=$original_url
   save_conf
   if [[ ${1:-} == restart ]]; then
     info "脚本已更新"
