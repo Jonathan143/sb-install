@@ -14,6 +14,7 @@
   - sing-box 内置 ACME（HTTP-01 / TLS-ALPN-01，需要公网 80 或 443）
   - 手动指定证书文件（自动校验证书与私钥是否匹配、域名是否匹配）
   - 自签证书（无域名或测试用）
+- **出口与分流**：粘贴 VLESS / Shadowsocks 链接添加落地出口，按域名或 IP/CIDR 分流，支持规则排序、启停及出口连通性检测
 - **节点管理**：新增、查看、修改、删除；每个协议一个独立配置文件，互不影响
 - **安全变更**：修改前快照配置、节点元数据和托管证书；备份失败则取消操作。`sing-box check` 校验通过后才重启，重启和运行状态检查失败时回滚；恢复时先在临时目录解压验证，损坏快照不会删除现有配置
 - **输出**：分享链接、终端二维码（需 `qrencode`）、客户端 outbound JSON，并保存链接到 `/etc/sing-box/nodes.txt`；Shadowsocks 额外输出 Mihomo YAML。AnyTLS+Reality 仅输出客户端 JSON，链接文件中记录配置获取提示
@@ -65,6 +66,7 @@ curl -fsSL -o /usr/local/bin/sb ${GH_PROXY}https://github.com/Jonathan143/sb-ins
 | `sb log [-f]` | 查看日志，`-f` 实时跟踪 |
 | `sb start` / `stop` / `restart` | 服务控制（启动和重启前会先校验配置） |
 | `sb dns` / `sb dns show` | 修改 / 查看系统 DNS |
+| `sb route` / `sb route show` | 出口与分流管理 / 查看规则（凭据隐藏） |
 | `sb cert` | 查看证书到期时间，强制续期 |
 | `sb core` | 安装或更新 sing-box 内核 |
 | `sb update` | 更新 sb 脚本本身 |
@@ -75,6 +77,26 @@ curl -fsSL -o /usr/local/bin/sb ${GH_PROXY}https://github.com/Jonathan143/sb-ins
 主菜单也会检查正在运行与磁盘安装的脚本版本；版本不一致时会显示两个版本，并提示按回车重新加载。已经运行的旧版脚本需先退出并重新运行一次，才能启用此检查。
 
 最新版更新与指定版本安装都先备份内核和配置，再校验配置、重启并确认服务运行；失败会恢复原内核和配置，并尝试恢复更新前的服务状态。内置 ACME 配置会随目标内核版本重新生成：1.14+ 使用 `tls.certificate_provider`，较旧版本保留 `tls.acme`，共存模式的旧 `config.json` 不会被改写。迁移格式见 [sing-box 官方迁移说明](https://sing-box.sagernet.org/migration/#migrate-inline-acme-to-certificate-provider)。
+
+## 出口与域名/IP 分流
+
+运行 `sb route`，或主菜单选择 **13 → 出口与分流**：
+
+1. 选择「粘贴链接新增出口」，粘贴完整 `vless://...` 或 `ss://...` 链接（输入隐藏），检查解析摘要并命名。
+2. 选择「新增规则」，填写精确域名、域名后缀或 IP/CIDR，多个值用英文逗号分隔，再选择出口标识。
+3. 规则从上到下首条命中生效；可以编辑、启停、移动和删除。未命中默认本机直连，也可更改默认出口。
+
+例如 `example.com` 的域名后缀规则会同时匹配根域和子域；IP 支持 IPv4、IPv6 和 CIDR，单个地址自动转换成 `/32` 或 `/128`。不要填写 URL、`*.` 或前导点。规则作用于全部脚本管理的入口，新建入口自动纳入；不改变客户端分享链接。指定出口故障时连接失败，不自动回退直连。
+
+**链接支持范围**：VLESS 的 TCP、WebSocket、gRPC、HTTP 传输，以及无 TLS、TLS、Reality；识别 UUID、Flow、SNI、指纹、ALPN、公钥、short ID、路径、Host 和 serviceName。Flow 仅支持与 TCP + TLS/Reality 配合的 `xtls-rprx-vision`。Shadowsocks 支持 SIP002、URL-safe Base64 认证及旧式整段 Base64 链接，加密方式为 `aes-128-gcm`、`aes-256-gcm`、`chacha20-ietf-poly1305`，以及 SS2022 的 AES-128、AES-256、ChaCha20（单用户密钥）。暂不支持插件、XHTTP、TCP HTTP 伪装、SS2022 多用户密钥链和非默认 Reality spiderX。不支持的参数或组合会拒绝导入，不静默丢弃。
+
+更新出口时重新粘贴链接即可，出口标识和规则引用保持不变。仍被规则（包括停用规则）或默认出口引用的出口不能删除。列表与解析摘要不展示密码、UUID 或完整链接；凭据保存在权限为 `600` 的 `meta/routing.json` 和 `conf.d/00-egress.json` 中，随现有快照备份/回滚。
+
+**DNS 与嗅探**：需要 sing-box **1.12.0+**。客户端传入域名时直接匹配；仅传入 IP 时尝试 TLS/HTTP/QUIC 嗅探（不改写目标），无法保证识别所有流量。遇到第一条启用的 IP 规则前，使用服务器的系统 DNS 解析域名，再按 IP 匹配；落地地址也使用系统 DNS。建议把域名规则排在 IP 规则前面。该功能不接管客户端 DNS，也不保证 DNS 请求经过落地。
+
+共存模式下，若原 `config.json` 已有路由规则，会拒绝启用本功能，以免合并规则的优先级产生歧义；请先整合原有规则或采用接管配置。没有已有路由规则时，新规则仅匹配托管入口，并保留原全局默认路由。
+
+每次保存都会校验配置并重启服务，失败则恢复变更前的配置。配置校验不代表网络可达；「检测出口连通性」启动独立的本地检测进程，通过所选出口访问 `https://api.ipify.org` 并显示出口 IP，不修改生产服务。该检测验证 HTTPS/TCP，不代表所有目标或 UDP 均可用。
 
 ## 协议与证书说明
 
@@ -243,6 +265,16 @@ bash dist/sb.sh help        # 无需 lib 目录即可运行
 ```
 
 有本地 sing-box 内核时，可运行 `SB_TEST_CORE=/绝对路径/sing-box bash tests/integration.sh`：使用真实内核校验全部协议及内置 ACME 配置，并在回环地址验证 Shadowsocks 客户端到服务端的 HTTP 请求。CI 另在 systemd 和 Alpine/OpenRC 中测试 1.12.0、1.14.4 的服务启停、重启和内核激活；这些测试不申请公网证书、不访问外部代理目标。
+
+出口与分流可以单独验证（仅使用回环地址，不需要 root）：
+
+```bash
+TEST_SING_BOX=/绝对路径/sing-box bash tests/routing.sh
+TEST_SING_BOX=/绝对路径/sing-box bash tests/routing-integration.sh
+```
+
+后者验证 VLESS/SS 的域名、域名后缀、IP 分流、域名解析后匹配 IP、落地故障不回退、停用规则后直连，以及独立出口检测。CI 在 1.12.0、1.14.4 上运行这两项测试。
+
 
 Release 工作流自动生成独立脚本并计算校验和；部署时无需额外下载模块。新建模块后，记得加入 `lib/modules.list`。
 

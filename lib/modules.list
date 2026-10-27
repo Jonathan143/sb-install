@@ -13,6 +13,7 @@ protocols
 hysteria2
 sharing
 transaction
+routing
 nodes
 service
 maintenance

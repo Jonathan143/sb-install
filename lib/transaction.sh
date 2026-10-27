@@ -99,7 +99,7 @@ apply_config() {
   log=$(mktemp) || return 1
   if [[ -z ${NODE_WAS_ACTIVE+x} ]]; then svc is-active && was_active=1; fi
   sb_args
-  if ! refresh_builtin_acme_configs || ! "$SB_BIN" "${SB_ARGS[@]}" check >"$log" 2>&1; then
+  if ! route_refresh || ! refresh_builtin_acme_configs || ! "$SB_BIN" "${SB_ARGS[@]}" check >"$log" 2>&1; then
     err "配置校验失败:"; cat "$log" >&2
     rm -f "$log"
     restore_snapshot; return 1

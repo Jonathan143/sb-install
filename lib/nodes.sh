@@ -193,6 +193,7 @@ delete_node_impl() {
   NODE_FILES_CHANGED=1
   rm -f "$(conf_file)" "$META_DIR/$id.env" || return 1
   if [[ -z $(list_ids) && ! ( ${SB_MODE:-takeover} == coexist && -f $SB_DIR/config.json ) ]]; then
+    route_refresh || return 1
     svc stop >/dev/null 2>&1 || { err "服务停止失败，已取消删除"; return 1; }
     write_nodes_txt || return 1
     info "已无任何节点，sing-box 服务已停止"

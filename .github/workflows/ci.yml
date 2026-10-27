@@ -40,6 +40,11 @@ jobs:
           mkdir "$RUNNER_TEMP/sb-test-core"
           curl -fsSL --retry 3 "https://github.com/SagerNet/sing-box/releases/download/v${CORE_VERSION}/${asset}.tar.gz" -o "$RUNNER_TEMP/core.tgz"
           tar -xzf "$RUNNER_TEMP/core.tgz" -C "$RUNNER_TEMP/sb-test-core" --strip-components=1
+      - name: Egress parser and local routing integration
+        if: matrix.manager == 'systemd'
+        run: |
+          TEST_SING_BOX="$RUNNER_TEMP/sb-test-core/sing-box" bash tests/routing.sh
+          TEST_SING_BOX="$RUNNER_TEMP/sb-test-core/sing-box" bash tests/routing-integration.sh
       - name: systemd integration
         if: matrix.manager == 'systemd'
         run: sudo env SB_TEST_CORE="$RUNNER_TEMP/sb-test-core/sing-box" SB_TEST_SERVICE=systemd bash tests/integration.sh

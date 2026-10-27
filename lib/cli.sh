@@ -26,6 +26,7 @@ main() {
     status) show_status ;;
     log|logs) show_log "${2:-}" ;;
     start|stop|restart) svc_cmd "$1" ;;
+    route) case ${2:-} in "") routing_menu ;; show) route_show ;; *) usage; return 1 ;; esac ;;
     cert) cert_menu ;;
     core) core_menu ;;
     update) update_script ;;
