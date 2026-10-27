@@ -53,7 +53,7 @@ acquire_lock() {
   command -v flock >/dev/null || return 0
   exec 9>>"$SB_LOCK" || { err "无法打开锁文件: $SB_LOCK"; return 1; }
   flock -n 9 && return 0
-  local pid start current
+  local pid start current i
   local managers=() starts=()
   warn "已有另一个 sb 实例正在运行，占用进程信息:"
   while IFS= read -r pid; do
@@ -65,25 +65,38 @@ acquire_lock() {
   done < <(lock_holders)
   # The previous process may have exited while we were inspecting it.
   flock -n 9 && return 0
-  if ((${#managers[@]} != 1)); then
-    err "无法唯一确认持锁的 sb 管理进程，请根据进程信息手动处理后重试"
+  if ((${#managers[@]} == 0)); then
+    err "无法确认持锁的 sb 管理进程，请根据进程信息手动处理后重试"
     return 1
   fi
-  pid=${managers[0]}; start=${starts[0]}
   lock_interactive || { err "非交互运行不会终止其他实例，请在终端运行 sb 处理"; return 1; }
-  warn "终止管理进程可能中断其正在执行的操作"
-  confirm "是否终止 sb 进程 $pid 并继续?" n || return 1
+  warn "终止管理进程及其持锁子 shell 可能中断正在执行的操作"
+  confirm "是否终止以下 sb 进程并继续: ${managers[*]}?" n || return 1
   flock -n 9 && return 0
-  current=$(lock_start_time "$pid" 2>/dev/null) || current=""
-  if [[ $current != "$start" ]] || ! lock_pid_holds "$pid" || ! lock_is_manager "$pid"; then
-    err "占用进程已变化，未发送终止信号，请重试"
-    return 1
-  fi
-  if ! kill -TERM "$pid"; then
-    flock -n 9 && return 0
-    err "无法终止进程 $pid，请检查权限后重试"
-    return 1
-  fi
+  # Validate the entire approved set before sending any signal. Bash subshells
+  # inherit both the lock descriptor and the manager's command line.
+  for ((i=0; i<${#managers[@]}; i++)); do
+    pid=${managers[i]}; start=${starts[i]}
+    current=$(lock_start_time "$pid" 2>/dev/null) || current=""
+    if [[ $current != "$start" ]] || ! lock_pid_holds "$pid" || ! lock_is_manager "$pid"; then
+      err "占用进程已变化，未发送终止信号，请重试"
+      return 1
+    fi
+  done
+  for ((i=0; i<${#managers[@]}; i++)); do
+    pid=${managers[i]}; start=${starts[i]}
+    # A previous TERM may have caused another approved process to exit. Never
+    # signal a reused PID or a process that no longer holds this lock.
+    current=$(lock_start_time "$pid" 2>/dev/null) || current=""
+    if [[ $current != "$start" ]] || ! lock_pid_holds "$pid" || ! lock_is_manager "$pid"; then
+      continue
+    fi
+    if ! kill -TERM "$pid"; then
+      flock -n 9 && return 0
+      err "无法终止进程 $pid，请检查权限后重试"
+      return 1
+    fi
+  done
   if flock -w 5 9; then
     info "已取得运行锁，继续启动"
     return 0

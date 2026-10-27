@@ -153,7 +153,7 @@ cert_dns() {
          val=$(ask "CF_Account_ID（用户 Token 可留空，账户级 Token 必填）") || return 1
          export CF_Account_ID=$val
          cf_preflight && break
-         read -rp "按回车重新填写 Cloudflare 凭据，输入 q 取消: " retry || return 1
+         read -erp "按回车重新填写 Cloudflare 凭据，输入 q 取消: " retry || return 1
          [[ $retry != [qQ] ]] || return 1
        done ;;
     2) dns=dns_ali

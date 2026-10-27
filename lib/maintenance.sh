@@ -102,7 +102,7 @@ core_menu() {
 
 restart_script() {
   local reply
-  read -rp "按回车重新运行 sb..." reply || exit 0
+  read -erp "按回车重新运行 sb..." reply || exit 0
   # Release the old process's lock before the new script acquires its own.
   exec 9>&-
   exec bash "$SB_CMD"

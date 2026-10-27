@@ -147,21 +147,41 @@ route_save_impl() {
   info "出口与分流配置已生效"
 }
 route_show() {
-  route_load | jq -r '
-    "出口（凭据隐藏）：", (.exits[] | "\(.id)  \(.name)  \(.config.type)  \(.config.server):\(.config.server_port)"),
-    "默认出口：\(.default)", "规则（首条命中生效）：",
-    (.rules | to_entries[] | "\(.key+1). [\(if .value.enabled then "启用" else "停用" end)] \(.value.kind) \(.value.values|join(", ")) → \(.value.outbound)")'
+  local state=${1:-$(route_load)}
+  jq -r '
+    . as $s |
+    def exit_name($id): if $id == "direct" then "本机直连" else
+      first($s.exits[] | select(.id == $id) | .name) // $id end;
+    "  默认出口：\(exit_name(.default))（未命中规则时使用）",
+    "  出口 \(.exits|length) 个  ·  规则 \(.rules|length) 条  ·  启用 \([.rules[]|select(.enabled)]|length) 条",
+    "", "出口列表（凭据隐藏）",
+    (if (.exits|length) == 0 then "  暂无出口，可选择 1 粘贴链接新增；本机直连始终可用"
+     else .exits | to_entries[] |
+       "  \(.key+1). \(.value.name)\(if .value.id == $s.default then " [默认]" else "" end)\n     \(.value.config.type) · \(.value.config.server | if contains(":") then "[" + . + "]" else . end):\(.value.config.server_port)" end),
+    "", "分流规则（从上到下，首条命中生效）",
+    (if (.rules|length) == 0 then "  暂无规则，所有流量使用默认出口"
+     else .rules | to_entries[] |
+       "  \(.key+1). [\(if .value.enabled then "启用" else "停用" end)] \(.value.kind | {domain:"精确域名",domain_suffix:"域名后缀",ip_cidr:"IP / CIDR"}[.] // .) · \(.value.values|join(", "))\n     → \(exit_name(.value.outbound))" end)' <<<"$state"
 }
 route_pick_exit() {
-  local state=$1 id
-  jq -r '"direct  本机直连", (.exits[] | "\(.id)  \(.name)")' <<<"$state" >&2
-  id=$(ask '选择出口标识' direct) || return 1
-  jq -e --arg id "$id" '$id == "direct" or any(.exits[]; .id == $id)' <<<"$state" >/dev/null || { err '出口不存在'; return 1; }
-  printf '%s' "$id"
+  local state=$1 mode=${2:-all} selected=${3:-} choices count choice default=''
+  choices=$(jq -c --arg mode "$mode" '
+    (if $mode == "managed" then [] else [{id:"direct",name:"本机直连"}] end) + .exits' <<<"$state") || return 1
+  count=$(jq 'length' <<<"$choices")
+  ((count > 0)) || { warn '暂无可管理的出口，请先新增出口'; return 1; }
+  jq -r 'to_entries[] | "  \(.key+1)  \(.value.name)  [\(.value.id)]"' <<<"$choices" >&2
+  if [[ -n $selected ]]; then
+    default=$(jq -r --arg id "$selected" 'to_entries[] | select(.value.id == $id) | .key+1' <<<"$choices")
+  fi
+  ui_item 0 '返回（也可输入 q）' >&2
+  choice=$(ask_choice '选择出口序号' "$count" "$default") || return 1
+  [[ $choice != 0 ]] || return 1
+  jq -r --argjson i "$((choice - 1))" '.[$i].id' <<<"$choices"
 }
 route_import() {
   local state=$1 id=${2:-} link parsed name
-  link=$(ask_secret '粘贴 vless:// 或 ss:// 链接') || return 1
+  link=$(ask '粘贴 vless:// 或 ss:// 链接（留空或 q 返回）') || return 1
+  case $link in ''|0|q|Q) return 0 ;; esac
   parsed=$(route_parse_link "$link") || return 1
   unset link
   jq -r '.config | "识别：\(.type)  \(.server):\(.server_port)  传输：\(.transport.type // "tcp")  TLS：\(.tls.enabled // false)  Reality：\(.tls.reality.enabled // false)"' <<<"$parsed"
@@ -177,20 +197,47 @@ route_import() {
   route_save "$state"
 }
 route_edit_rule() {
-  local state=$1 index=${2:--1} kind values outbound rule
-  ui_item 1 '精确域名'; ui_item 2 '域名后缀（含根域及子域）'; ui_item 3 'IP / CIDR'
-  kind=$(ask_choice '匹配类型' 3 2) || return 1
-  case $kind in 1) kind=domain ;; 2) kind=domain_suffix ;; 3) kind=ip_cidr ;; *) return 0 ;; esac
-  values=$(ask '匹配值（多个值用英文逗号分隔）') || return 1
-  values=$(jq -en --arg s "$values" '$s | split(",") | map(gsub("^\\s+|\\s+$"; "")) | if length > 0 and all(.[]; length > 0 and (test("[[:space:][:cntrl:]]")|not)) then . else error("empty") end') || { err '匹配值不能为空或包含空白'; return 1; }
-  if [[ $kind == ip_cidr ]]; then
-    values=$(jq -e 'map(if contains("/") then . elif contains(":") then . + "/128" else . + "/32" end) |
-      if all(.[]; test("^[0-9a-fA-F:.]+/[0-9]{1,3}$")) then . else error("IP") end' <<<"$values") || { err '请输入 IP 地址或 CIDR'; return 1; }
-  else
-    values=$(jq -e 'map(ascii_downcase) | if all(.[]; test("^([a-z0-9_](?:[a-z0-9_-]*[a-z0-9_])?\\.)*[a-z0-9_](?:[a-z0-9_-]*[a-z0-9_])?$") and length <= 253) then . else error("domain") end' <<<"$values") || { err '请输入域名，不含 URL、通配符或前导点'; return 1; }
+  local state=$1 index=${2:--1} kind values outbound rule duplicate
+  local kind_default=2 values_default='' outbound_default=direct enabled=true
+  if ((index >= 0)); then
+    rule=$(jq -c --argjson i "$index" '.rules[$i]' <<<"$state") || return 1
+    kind_default=$(jq -r '.kind | {domain:1,domain_suffix:2,ip_cidr:3}[.]' <<<"$rule")
+    values_default=$(jq -r '.values|join(", ")' <<<"$rule")
+    outbound_default=$(jq -r '.outbound' <<<"$rule")
+    enabled=$(jq -r '.enabled' <<<"$rule")
+    info "编辑第 $((index + 1)) 条规则，回车保留原值"
   fi
-  outbound=$(route_pick_exit "$state") || return 1
-  rule=$(jq -n --arg kind "$kind" --argjson values "$values" --arg outbound "$outbound" '{kind:$kind,values:$values,outbound:$outbound,enabled:true}') || return 1
+  ui_item 1 '精确域名'; ui_item 2 '域名后缀（含根域及子域）'; ui_item 3 'IP / CIDR'
+  ui_item 0 '返回（也可输入 q）'
+  kind=$(ask_choice '匹配类型' 3 "$kind_default") || return 1
+  case $kind in 1) kind=domain ;; 2) kind=domain_suffix ;; 3) kind=ip_cidr ;; *) return 0 ;; esac
+  while true; do
+    values=$(ask_edit '匹配值（英文逗号分隔，0/q 返回）' "$values_default") || return 1
+    values_default=$values
+    case $values in 0|q|Q) return 0 ;; esac
+    values=$(jq -en --arg s "$values" '$s | split(",") | map(gsub("^\\s+|\\s+$"; "")) | if length > 0 and all(.[]; length > 0 and (test("[[:space:][:cntrl:]]")|not)) then . else error("empty") end' 2>/dev/null) || { err '匹配值不能为空、包含空白或空项，请检查连续逗号及首尾逗号'; continue; }
+    if [[ $kind == ip_cidr ]]; then
+      values=$(jq -e 'map(if contains("/") then . elif contains(":") then . + "/128" else . + "/32" end) |
+        if all(.[]; test("^[0-9a-fA-F:.]+/[0-9]{1,3}$")) then . else error("IP") end' <<<"$values" 2>/dev/null) || { err '请输入 IP 地址或 CIDR'; continue; }
+    else
+      values=$(jq -e 'map(ascii_downcase) | if all(.[]; test("^([a-z0-9_](?:[a-z0-9_-]*[a-z0-9_])?\\.)*[a-z0-9_](?:[a-z0-9_-]*[a-z0-9_])?$") and length <= 253) then . else error("domain") end' <<<"$values" 2>/dev/null) || { err '请输入域名，不含 URL、通配符或前导点'; continue; }
+    fi
+    break
+  done
+  outbound=$(route_pick_exit "$state" all "$outbound_default") || return 1
+  rule=$(jq -n --arg kind "$kind" --argjson values "$values" --arg outbound "$outbound" --argjson enabled "$enabled" '{kind:$kind,values:$values,outbound:$outbound,enabled:$enabled}') || return 1
+  # Values form a set; order and repeated entries do not change the match.
+  # Ignore enabled state so a disabled rule can be re-enabled instead of copied.
+  duplicate=$(jq -r --argjson i "$index" --argjson rule "$rule" '
+    [.rules | to_entries[] | select(.key != $i) |
+      select(.value.kind == $rule.kind and .value.outbound == $rule.outbound and
+        (.value.values | unique) == ($rule.values | unique)) |
+      "第 \(.key + 1) 条（\(if .value.enabled then "启用" else "停用" end)）"] | first // empty' <<<"$state") || return 1
+  if [[ -n $duplicate ]]; then
+    warn "规则已存在：${duplicate}，未保存重复规则；如需启用，请使用「启用 / 停用规则」"
+    return 0
+  fi
+  rule=$(jq '.values |= unique' <<<"$rule") || return 1
   state=$(jq --argjson i "$index" --argjson rule "$rule" 'if $i < 0 then .rules += [$rule] else .rules[$i]=$rule end' <<<"$state") || return 1
   route_save "$state"
 }
@@ -199,19 +246,22 @@ routing_menu() {
   need_core || return 1
   while true; do
     state=$(route_load) || return 1
-    ui_title '出口与分流'; route_show
+    ui_title '出口与分流'; route_show "$state"
+    ui_section '出口管理'
     ui_item 1 '粘贴链接新增出口'; ui_item 2 '更新出口链接'; ui_item 3 '删除出口'
+    ui_section '规则管理'
     ui_item 4 '新增规则'; ui_item 5 '编辑规则'; ui_item 6 '启用 / 停用规则'
-    ui_item 7 '调整规则顺序'; ui_item 8 '删除规则'; ui_item 9 '默认出口'
+    ui_item 7 '调整规则顺序'; ui_item 8 '删除规则'
+    ui_section '默认出口与检测'
+    ui_item 9 '设置默认出口'
     ui_item 10 '检测出口连通性（访问 api.ipify.org）'
-    ui_item 0 '返回'
+    printf '\n'; ui_item 0 '返回（也可输入 q）'
     c=$(ask_choice '请选择' 10) || return 0
     case $c in
       0) UI_SKIP_PAUSE=1; return 0 ;;
       1) route_import "$state" ;;
       2|3)
-        id=$(route_pick_exit "$state") || continue
-        [[ $id != direct ]] || { warn '本机直连为内置出口'; continue; }
+        id=$(route_pick_exit "$state" managed) || continue
         if [[ $c == 2 ]]; then route_import "$state" "$id"
         elif jq -e --arg id "$id" '.default == $id or any(.rules[]; .outbound == $id)' <<<"$state" >/dev/null; then warn '出口仍被规则或默认出口引用，请先修改引用'
         else
@@ -233,8 +283,10 @@ routing_menu() {
           8) state=$(jq --argjson i "$index" 'del(.rules[$i])' <<<"$state") || continue ;;
         esac
         route_save "$state" ;;
-      10) id=$(route_pick_exit "$state") && route_probe "$state" "$id" ;;
-      9) id=$(route_pick_exit "$state") || continue
+      10) id=$(route_pick_exit "$state") || continue
+          route_probe "$state" "$id"
+          pause || return 0 ;;
+      9) id=$(route_pick_exit "$state" all "$(jq -r .default <<<"$state")") || continue
          state=$(jq --arg id "$id" '.default=$id' <<<"$state") && route_save "$state" ;;
     esac
   done

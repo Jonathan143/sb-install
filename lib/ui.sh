@@ -20,8 +20,23 @@ ui_item() { local RED GREEN YELLOW CYAN PLAIN BOLD DIM; ui_colors 1; printf '  %
 ask() { local RED GREEN YELLOW CYAN PLAIN BOLD DIM; ui_colors 2;
   local a
   printf '%s › %s%s: %s' "$CYAN" "$1" "${2:+ [$2]}" "$PLAIN" >&2
-  IFS= read -r a || return 1
+  if [[ -t 0 ]]; then
+    IFS= read -r -e a || return 1
+  else
+    IFS= read -r a || return 1
+  fi
   printf '%s\n' "${a:-${2:-}}"
+}
+# Readline can restore the previous input directly into the editable line.
+# Bash 3 and redirected input retain the usual displayed-default behavior.
+ask_edit() {
+  local a
+  if [[ -t 0 && ${BASH_VERSINFO[0]} -ge 4 ]]; then
+    IFS= read -r -e -i "${2:-}" -p " › $1: " a || return 1
+    printf '%s\n' "$a"
+  else
+    ask "$@"
+  fi
 }
 ask_secret() {
   local a rc=0
@@ -59,5 +74,5 @@ pause() { local RED GREEN YELLOW CYAN PLAIN BOLD DIM; ui_colors 2;
   local reply
   [[ -t 0 ]] || return 0
   printf '\n%s按回车继续…%s' "$DIM" "$PLAIN" >&2
-  IFS= read -r reply
+  IFS= read -r -e reply
 }

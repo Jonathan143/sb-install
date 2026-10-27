@@ -287,7 +287,7 @@ pick_sni() { # -> PICKED；取消/输入结束时返回失败，调用者不保�
   local ranked=()
   PICKED=""
   echo "Reality SNI: 1) 域名优选（推荐）  2) 手动选择/输入  0) 取消"
-  read -rp "请选择 [1]: " mode || return 1
+  read -erp "请选择 [1]: " mode || return 1
   mode=${mode:-1}
   while true; do
     case $mode in
@@ -313,7 +313,7 @@ pick_sni() { # -> PICKED；取消/输入结束时返回失败，调用者不保�
         def=""; ((${#ranked[@]} == 0)) || def=1
         [[ -n $def ]] || warn "没有稳定通过的域名；可重测或手动输入，不会自动使用失败域名"
         while true; do
-          read -rp "选择排名${def:+ [回车选 1]}，r 重测，s 切换范围，m 手动，0 取消: " in || return 1
+          read -erp "选择排名${def:+ [回车选 1]}，r 重测，s 切换范围，m 手动，0 取消: " in || return 1
           in=${in:-$def}
           case $in in
             0|q|Q) return 1 ;;
@@ -332,7 +332,7 @@ pick_sni() { # -> PICKED；取消/输入结束时返回失败，调用者不保�
           sni_domain_info "${SNI_LIST[$i]}"
           printf '  %2d) %-36s [%s]\n' $((i + 1)) "${SNI_LIST[$i]}" "$SNI_CATEGORY"
         done
-        read -rp "请选择: " in || return 1
+        read -erp "请选择: " in || return 1
         case $in in 0|q|Q) return 1 ;; r|R) mode=1; setup=1; continue ;; esac
         if [[ $in =~ ^[0-9]{1,3}$ ]] && ((10#$in >= 1 && 10#$in <= ${#SNI_LIST[@]})); then
           cand=${SNI_LIST[10#$in - 1]}
@@ -347,7 +347,7 @@ pick_sni() { # -> PICKED；取消/输入结束时返回失败，调用者不保�
           confirm "仍然使用?" n || continue
         fi
         PICKED=$cand; info "已选择 $PICKED"; return 0 ;;
-      *) warn "无效选择"; read -rp "1 优选，2 手动，0 取消: " mode || return 1 ;;
+      *) warn "无效选择"; read -erp "1 优选，2 手动，0 取消: " mode || return 1 ;;
     esac
   done
 }
