@@ -137,3 +137,21 @@ for scenario in valid mismatch missing duplicate; do
   ) || exit 1
 done
 echo 'PASS: script artifact validation and release checksums'
+
+# Preview artifacts must pass the same structural checks as stable builds.
+for version in 9.9.9-alpha.1 9.9.9-beta.12 9.9.9-rc.1; do
+  sed "s/9.9.9/$version/g" "$ROOT/download" > "$ROOT/preview"
+  validate_script_artifact "$ROOT/preview" || fail 'valid preview artifact rejected'
+done
+for version in 9.9.9-beta.01 9.9.9-beta 9.9.9-unknown.1; do
+  sed "s/9.9.9/$version/g" "$ROOT/download" > "$ROOT/preview"
+  if validate_script_artifact "$ROOT/preview" 2>/dev/null; then fail 'invalid preview artifact accepted'; fi
+done
+sed 's/9.9.9/9.9.9-beta.1/g' "$ROOT/download" > "$ROOT/preview"
+(
+  SB_CMD="$ROOT/preview"
+  exec 9>"$ROOT/lock"
+  main_menu
+  echo old-menu-returned
+) <<< '' > "$ROOT/preview-output" 2>&1 || fail 'preview menu reload failed'
+grep -q '^new-script$' "$ROOT/preview-output" || fail 'preview version not detected by menu'

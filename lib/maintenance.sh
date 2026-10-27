@@ -118,8 +118,8 @@ validate_script_artifact() {
     err "下载的是源码入口，缺少配套模块。请将 SCRIPT_URL 改为 Release 的 sb.sh 下载地址"
     return 1
   fi
-  version=$(sed -n 's/^SB_VERSION="\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)"$/\1/p' "$file")
-  [[ $version =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
+  version=$(sed -n 's/^SB_VERSION="\([^"]*\)"$/\1/p' "$file")
+  [[ $version =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(alpha|beta|rc)\.(0|[1-9][0-9]*))?$ ]] || {
     err "脚本缺少唯一有效版本号，已取消更新"; return 1;
   }
   trailer=$'if [[ ${BASH_SOURCE[0]} == "$0" ]]; then\n  main "$@"\n  exit $?\nfi'

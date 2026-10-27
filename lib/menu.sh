@@ -30,7 +30,7 @@ main_menu() {
   ui_colors 1
   local c st installed UI_SKIP_PAUSE=0
   while true; do
-    installed=$(sed -n 's/^SB_VERSION="\([0-9][0-9.]*\)"/\1/p' "$SB_CMD" 2>/dev/null | head -n1)
+    installed=$(sed -n 's/^SB_VERSION="\([^"]*\)"/\1/p' "$SB_CMD" 2>/dev/null | head -n1)
     if [[ -n $installed && $installed != "$SB_VERSION" ]]; then
       info "当前运行 v${SB_VERSION}，磁盘已安装 v${installed}，需要重新加载脚本"
       restart_script

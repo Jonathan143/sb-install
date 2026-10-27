@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: '已有版本标签，例如 v1.0.1'
+        description: '已有版本标签，例如 v1.0.1 或 v1.1.0-beta.1'
         required: true
         type: string
 permissions:
@@ -46,5 +46,5 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          gh release create "$TAG" dist/sb.sh dist/SHA256SUMS \
-            --verify-tag --title "sb $TAG" --generate-notes
+          source scripts/release.sh
+          publish_release "$TAG" dist/sb.sh dist/SHA256SUMS

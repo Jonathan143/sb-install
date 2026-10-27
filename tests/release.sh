@@ -8,10 +8,25 @@ export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
 fail() { echo "FAIL: $*" >&2; exit 1; }
 source "$PROJECT/scripts/release.sh"
 valid_version 1.2.3 || fail 'valid version rejected'
-for bad in 01.2.3 1.2 1.2.3-rc.1 '1.2.3;echo'; do
+for bad in 01.2.3 1.2 1.2.3-rc.01 1.2.3-beta 1.2.3-dev.1 1.2.3-rc.1+build '1.2.3;echo'; do
   if valid_version "$bad"; then fail 'invalid version accepted'; fi
 done
 version_gt 1.10.0 1.9.9 || fail 'numeric version comparison'
+for version in 1.2.3-alpha.0 1.2.3-beta.1 1.2.3-rc.10; do
+  valid_version "$version" || fail 'prerelease version rejected'
+done
+for pair in '1.2.3-beta.1 1.2.3-alpha.9' '1.2.3-rc.1 1.2.3-beta.99' '1.2.3 1.2.3-rc.9' '1.2.4-alpha.1 1.2.3' '1.2.3-beta.10 1.2.3-beta.9'; do
+  read -r higher lower <<< "$pair"
+  version_gt "$higher" "$lower" || fail 'prerelease comparison'
+  if version_gt "$lower" "$higher" || version_gt "$higher" "$higher"; then fail 'version ordering'; fi
+done
+# Mock the external publishing boundary, verify exact API CLI flags without a release.
+gh() { printf '%s\n' "$@" > "$ROOT/gh-args"; }
+publish_release v1.2.3-beta.1 dist/sb.sh dist/SHA256SUMS
+grep -Fxq -- '--prerelease' "$ROOT/gh-args" || fail 'missing prerelease flag'
+grep -Fxq -- '--latest=false' "$ROOT/gh-args" || fail 'preview can replace Latest'
+publish_release v1.2.3 dist/sb.sh dist/SHA256SUMS
+if grep -Eq -- '^--prerelease$|^--latest=false$' "$ROOT/gh-args"; then fail 'stable release flagged as preview'; fi
 new_repo() {
   rm -rf "$ROOT/remote.git" "$ROOT/work"
   git init --bare --initial-branch=main "$ROOT/remote.git" >/dev/null
@@ -47,6 +62,24 @@ for spec in '1 1.2.4' '2 1.3.0' '3 2.0.0' '5 1.2.3'; do
   [[ -z $(git status --porcelain) ]] || fail 'dirty after release'
 done
 new_repo
+run_release 6 '' y || { cat "$ROOT/output"; fail 'first preview'; }
+git show-ref --verify --quiet refs/tags/v1.2.4-beta.1 || fail 'default preview tag'
+run_release 6 '' y || fail 'increment preview'
+git show-ref --verify --quiet refs/tags/v1.2.4-beta.2 || fail 'preview sequence'
+if run_release 4 1.2.4-alpha.9 y; then fail 'preview downgrade accepted'; fi
+run_release 6 v1.2.4-rc.1 y || fail 'switch to rc'
+run_release 7 y || fail 'promote to stable'
+[[ $(sed -n 's/^SB_VERSION="\(.*\)"/\1/p' sb.sh) == 1.2.4 ]] || fail 'promotion skipped base version'
+git --git-dir="$ROOT/remote.git" show-ref --verify --quiet refs/tags/v1.2.4 || fail 'stable promotion not pushed'
+if run_release 6 1.2.4-rc.2 y; then fail 'preview of released stable accepted'; fi
+new_repo
+# Existing remote previews must participate in version ordering.
+git tag v1.3.0-rc.1
+git push -q origin refs/tags/v1.3.0-rc.1
+git tag -d v1.3.0-rc.1 >/dev/null
+if run_release 6 1.3.0-beta.9 y; then fail 'remote newer preview ignored'; fi
+[[ $(git rev-parse HEAD) == "$BEFORE" ]] || fail 'failed preview committed'
+new_repo
 run_release 4 v1.10.0 y || fail 'custom version'
 if run_release 5 y; then fail 'duplicate tag accepted'; fi
 new_repo
@@ -54,7 +87,7 @@ run_release 1 n || fail 'cancel failed'
 assert_unchanged
 run_release 0 || fail 'menu cancel failed'
 assert_unchanged
-for bad in 01.2.4 1.2.2 1.2.4-rc.1; do
+for bad in 01.2.4 1.2.2 1.2.3-rc.1; do
   if run_release 4 "$bad" y; then fail 'invalid or lower version accepted'; fi
   assert_unchanged
 done
