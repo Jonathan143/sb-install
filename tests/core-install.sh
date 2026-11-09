@@ -64,9 +64,18 @@ unset -f install
 reset_case
 printf '#!/missing/sing-box-loader\n' > "$SB_BIN"
 if core_version >/dev/null; then fail 'broken core accepted'; fi
-need_core || fail 'broken core repair'
-[[ -f $ROOT/service && $(core_version) == 1.14.3 ]] || fail 'repair incomplete'
+if need_core; then fail 'broken core accepted'; fi
+[[ ! -f $ROOT/service && ! -f $ROOT/urls ]] || fail 'failed probe triggered reinstall'
+reset_case
+rm -f "$SB_BIN"
+need_core || fail 'missing core installation'
+[[ -f $ROOT/service && $(core_version) == 1.14.3 ]] || fail 'installation incomplete'
 reset_case
 need_core || fail 'healthy core rejected'
 [[ ! -f $ROOT/urls ]] || fail 'healthy core reinstalled'
+reset_case
+printf '#!/bin/sh\necho "runtime: failed to create new OS thread" >&2\nexit 2\n' > "$SB_BIN"
+if need_core > "$ROOT/output" 2>&1; then fail 'resource failure accepted'; fi
+grep -q 'failed to create new OS thread' "$ROOT/output" || fail 'probe error hidden'
+[[ ! -f $ROOT/urls && ! -f $ROOT/service ]] || fail 'resource failure triggered reinstall'
 echo 'PASS: core installation regression tests'

@@ -22,7 +22,8 @@ main() {
   fi
   bootstrap || return 1
   case ${1:-} in
-    "") need_core && write_service; main_menu ;;
+    # Opening the menu must not launch another Go runtime or rewrite services.
+    "") if [[ ! -e $SB_BIN ]]; then need_core; fi; main_menu ;;
     add) add_node ;;
     list|ls) list_nodes ;;
     info) select_node "${2:-}" && show_node "$SEL_ID" ;;

@@ -4,11 +4,11 @@
 # sing-box 内核
 #---------------------------------------------------------------------
 core_version() {
-  local output version
+  local output version product label rest
   [[ -x $SB_BIN ]] || return 1
-  output=$("$SB_BIN" version 2>/dev/null) || return 1
-  version=$(awk 'NR==1 && $1=="sing-box" && $2=="version" {print $3}' <<<"$output")
-  [[ -n $version ]] || return 1
+  output=$("$SB_BIN" version) || return 1
+  read -r product label version rest <<< "$output"
+  [[ $product == sing-box && $label == version && -n $version ]] || return 1
   printf '%s\n' "$version"
 }
 
@@ -132,7 +132,9 @@ write_base() {
 need_core() {
   core_version >/dev/null && return 0
   if [[ -e $SB_BIN ]]; then
-    warn "sing-box 内核已存在但无法运行，需要重新安装兼容版本"
+    warn "sing-box 内核版本检测失败，可能是进程/线程配额不足、运行库缺失或文件异常；不自动重装"
+    warn "请检查上方错误；确认需要重装时可执行 sb core"
+    return 1
   else
     warn "尚未安装 sing-box 内核"
   fi

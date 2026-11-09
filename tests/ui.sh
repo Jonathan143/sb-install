@@ -18,11 +18,17 @@ if pick_port tcp < /dev/null; then fail 'port EOF'; fi
 # EOF must leave the menu without looping or performing a default action.
 SB_CMD="$ROOT/missing"
 svc() { return 1; }
-core_version() { return 1; }
-list_ids() { :; }
+core_version() { echo probe >> "$ROOT/unexpected-menu-probe"; return 1; }
+list_ids() { echo pipeline >> "$ROOT/unexpected-menu-probe"; }
+META_DIR="$ROOT/menu-nodes"
+mkdir -p "$META_DIR"
+touch "$META_DIR/1.env" "$META_DIR/2.env" "$META_DIR/ignored.txt"
+mkdir "$META_DIR/directory.env"
 # Simulate a previously colored terminal even when CI itself has no TTY.
 RED=$'\033[31m'; GREEN=$'\033[32m'; CYAN=$'\033[36m'; PLAIN=$'\033[0m'
 main_menu < /dev/null > "$ROOT/menu" || fail "menu EOF"
+[[ ! -e $ROOT/unexpected-menu-probe ]] || fail 'menu launched version probe or listing pipeline'
+grep -q '节点 2' "$ROOT/menu" || fail 'menu node count'
 if LC_ALL=C grep -q $'\033' "$ROOT/menu"; then fail 'redirected output contains ANSI'; fi
 grep -q '节点管理' "$ROOT/menu" || fail 'missing sections'
 # Exercise the main menu: a back action must not consume an extra Enter.

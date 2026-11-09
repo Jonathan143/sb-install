@@ -96,7 +96,7 @@ core_menu() {
     2) version=$(ask "版本号（如 1.12.0）") || return 1
        [[ -n $version ]] || { warn "版本号不能为空"; return 1; }
        activate_core "$version" ;;
-    3) echo "$(core_version || echo 未安装)" ;;
+    3) core_version || { warn '无法读取内核版本，请检查上方错误及进程/线程配额'; return 1; } ;;
   esac
 }
 

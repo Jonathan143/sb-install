@@ -29,16 +29,31 @@ EOF
 main_menu() {
   local RED GREEN YELLOW CYAN PLAIN BOLD DIM
   ui_colors 1
-  local c st installed UI_SKIP_PAUSE=0
+  local c st installed line core_label node_count file UI_SKIP_PAUSE=0
   while true; do
-    installed=$(sed -n 's/^SB_VERSION="\([^"]*\)"/\1/p' "$SB_CMD" 2>/dev/null | head -n1)
+    installed=""
+    if [[ -r $SB_CMD ]]; then
+      while IFS= read -r line; do
+        if [[ $line == SB_VERSION=\"*\" ]]; then
+          installed=${line#SB_VERSION=\"}; installed=${installed%\"}
+          break
+        fi
+      done < "$SB_CMD"
+    fi
     if [[ -n $installed && $installed != "$SB_VERSION" ]]; then
       info "当前运行 v${SB_VERSION}，磁盘已安装 v${installed}，需要重新加载脚本"
       restart_script
     fi
     if svc is-active; then st="${GREEN}运行中${PLAIN}"; else st="${RED}未运行${PLAIN}"; fi
     ui_title "sing-box 管理脚本 v$SB_VERSION"
-    printf '  服务 %s  ·  内核 %s  ·  节点 %s\n' "$st" "$(core_version || echo 未安装)" "$(list_ids | grep -c .)"
+    core_label='未安装'
+    if [[ -x $SB_BIN ]]; then core_label='已安装（未检测版本）'
+    elif [[ -e $SB_BIN ]]; then core_label='文件不可执行'; fi
+    node_count=0
+    for file in "$META_DIR"/*.env; do
+      [[ -f $file ]] && node_count=$((node_count + 1))
+    done
+    printf '  服务 %s  ·  内核 %s  ·  节点 %s\n' "$st" "$core_label" "$node_count"
     ui_section '节点管理'
     ui_item 1 '新增节点'; ui_item 2 '查看节点 / 分享配置'
     ui_item 3 '修改节点'; ui_item 4 '删除节点'
