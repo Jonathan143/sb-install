@@ -74,13 +74,35 @@ show_log() {
 }
 
 svc_cmd() { # start|stop|restart
-  if [[ $1 != stop ]]; then
+  local action=$1
+  case $action in start|stop|restart) ;; *) err "无效服务操作: $action"; return 1 ;; esac
+  if [[ $action != stop ]]; then
     sb_args
     "$SB_BIN" "${SB_ARGS[@]}" check || { err "配置校验未通过，已取消"; return 1; }
+    # 与内核更新保持一致，修复缺失/过期的服务定义并创建工作目录。
+    write_service || { err "服务定义更新失败，已取消"; return 1; }
   fi
-  svc "$1" && info "已执行: $1"
-  sleep 1
-  svc is-active && info "当前状态: 运行中" || info "当前状态: 未运行"
+  if ! svc "$action"; then
+    err "服务操作失败: $action"
+    show_log >&2
+    return 1
+  fi
+  sleep 2
+  if svc is-active; then
+    if [[ $action == stop ]]; then
+      err "停止后服务仍在运行"
+      return 1
+    fi
+    info "当前状态: 运行中"
+  else
+    if [[ $action != stop ]]; then
+      err "服务${action}后未正常运行，最近日志:"
+      show_log >&2
+      return 1
+    fi
+    info "当前状态: 未运行"
+  fi
+  info "已执行: $action"
 }
 
 service_menu() {
