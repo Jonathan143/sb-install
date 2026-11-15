@@ -57,10 +57,33 @@ for MODE in broken download-failure invalid-output; do
   if grep -q '已安装:' "$ROOT/output"; then fail "$MODE reported success"; fi
 done
 reset_case
-install() { return 1; }
+mv() { return 1; }
 if install_core 1.14.3; then fail 'write failure accepted'; fi
 [[ $(core_version) == 1.12.0 ]] || fail 'write failure replaced core'
-unset -f install
+[[ -z $(find "$ROOT/bin" -name 'sing-box.new.*' -print) ]] || fail 'staged file leaked'
+unset -f mv
+reset_case
+mv() {
+  if [[ $2 == */unpack/*/sing-box ]]; then
+    [[ ! -e ${2%/unpack/*}/sb.tgz ]] || fail 'archive retained during staging'
+    command mv "$@" || return
+    [[ ! -e $2 ]] || fail 'candidate copied instead of moved'
+  else
+    command mv "$@"
+  fi
+}
+install_core 1.14.3 || fail 'move staging failed'
+[[ $(core_version) == 1.14.3 ]] || fail 'moved core invalid'
+unset -f mv
+reset_case
+chmod() {
+  [[ $2 != "$SB_BIN".new.* ]] || return 1
+  command chmod "$@"
+}
+if install_core 1.14.3 > "$ROOT/output" 2>&1; then fail 'chmod failure accepted'; fi
+[[ $(core_version) == 1.12.0 ]] || fail 'chmod failure replaced core'
+[[ -z $(find "$ROOT/bin" -name 'sing-box.new.*' -print) ]] || fail 'chmod failure leaked stage'
+unset -f chmod
 reset_case
 printf '#!/missing/sing-box-loader\n' > "$SB_BIN"
 if core_version >/dev/null; then fail 'broken core accepted'; fi

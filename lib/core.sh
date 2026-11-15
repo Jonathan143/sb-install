@@ -46,6 +46,8 @@ install_core() {
     if ! tar -xzf "$tmp/sb.tgz" -C "$tmp/unpack"; then
       warn "解压失败，尝试其他兼容构建"; continue
     fi
+    # 解压完成后即释放压缩包占用，降低受限磁盘/容器的更新峰值。
+    rm -f "$tmp/sb.tgz"
     candidate="$tmp/unpack/sing-box-${ver}-linux-${arch}${variant}/sing-box"
     # 先验证可执行性，再替换现有内核，避免安装失败破坏可用版本。
     if ! output=$(SB_BIN="$candidate" core_version); then
@@ -55,10 +57,14 @@ install_core() {
     fi
     mkdir -p "$(dirname "$SB_BIN")" || { rm -rf "$tmp"; return 1; }
     staged=$(mktemp "${SB_BIN}.new.XXXXXX") || { rm -rf "$tmp"; return 1; }
-    if ! install -m 755 "$candidate" "$staged" ||
+    # 同一文件系统直接移动，避免再复制整个内核；跨文件系统由 mv 复制。
+    # 始终先写暂存文件，不能直接覆盖仍在使用的旧内核。
+    if ! mv -f "$candidate" "$staged" ||
+       ! chmod 755 "$staged" ||
        ! SB_BIN="$staged" core_version >/dev/null ||
        ! mv -f "$staged" "$SB_BIN"; then
       err "内核安装失败，原内核未替换"
+      warn "若上方出现 Quota exceeded 或 No space left on device，请检查 $SB_BIN 所在文件系统的磁盘配额、剩余空间及 inode；释放空间或提高配额后重试"
       rm -f "$staged"; rm -rf "$tmp"; return 1
     fi
     rm -rf "$tmp"
