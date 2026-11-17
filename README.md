@@ -39,6 +39,43 @@ curl -fsSL -o /usr/local/bin/sb https://github.com/Jonathan143/sb-install/releas
 SCRIPT_URL=https://github.com/Jonathan143/sb-install/releases/latest/download/sb.sh bash <(curl -fsSL https://github.com/Jonathan143/sb-install/releases/latest/download/sb.sh)
 ```
 
+### Alpine / 尚未安装 Bash
+
+使用 POSIX `sh` 安装入口，自动安装缺少的 Bash，再下载独立 Release 脚本：
+
+```sh
+wget -qO- https://raw.githubusercontent.com/Jonathan143/sb-install/main/install.sh | sh
+```
+
+入口需要 root 和可用的 `curl` 或 `wget`。支持 `SCRIPT_URL` 指定独立脚本地址、`GH_PROXY` 设置 Release 下载前缀。管道启动菜单时从终端读取输入。
+
+### 无交互添加节点
+
+`sb add` 保留交互菜单；带参数时进入无交互模式，参数错误直接退出。七种协议均可使用，`hysteria2`、`shadowsocks` 也可作为 `hy2`、`ss` 的别名。
+
+```bash
+sb add --protocol reality --port 24443 --public-port 34443 \
+  --address node.example.com --sni www.python.org
+
+sb add --protocol hy2 --port 24444 --address node.example.com \
+  --cert self --domain node.example.com --password-file /root/node-password
+
+sb add --protocol ws --port 24445 --address node.example.com \
+  --cert manual --domain node.example.com \
+  --cert-file /etc/certs/fullchain.pem --key-file /etc/certs/key.pem --multiplex
+```
+
+- 监听端口省略时随机选择；对外端口默认等于监听端口；连接地址省略时检测公网 IP。
+- Reality 的 SNI 省略时从内置候选优选，只有三次全部通过的域名可入选，全部失败则退出。`--flow none --multiplex` 可启用 Reality 多路复用；默认开启 Flow。
+- UUID、密码省略时自动生成；自定义 UUID 使用 `--uuid`，密码通过 `--password-file` 读取非空单行文本。SS 使用 `--method` 指定现有四种算法之一。
+- TLS 协议支持 `--cert self|manual`，默认自签、域名 `www.bing.com`；手动证书必须匹配私钥与域名且未过期。DNS-01 和内置 ACME 仍通过交互入口配置。
+- `--firewall skip` 跳过防火墙修改；`--note` 设置备注。所有参数见 `sb add --help`。
+- 首次使用会安装缺少的内核；遇到尚未接管的旧 `config.json` 会停止，先通过菜单选择接管或共存。
+
+`status`、`doctor`、`config`、`list`、`info`、`log`、`dns show` 和 `route show` 只读取状态，不安装依赖、不初始化配置，也不等待管理操作锁。
+
+防火墙只清理脚本创建且已无节点引用的规则；已有规则保持原样。firewalld 分别管理运行时和永久规则，不执行全局 reload。规则归属保存在 `/etc/sing-box/firewall.rules`，放行失败会取消节点变更并撤销本次新增规则；清理失败保留记录。升级前已有的规则没有归属记录，将予以保留。
+
 ### 国内或无法直连 GitHub 的机器
 
 给下载地址加上加速前缀，同时设置 `GH_PROXY`，让内核也走加速下载（以下前缀仅为示例，请自行替换为可用的加速服务）：
@@ -58,12 +95,13 @@ curl -fsSL -o /usr/local/bin/sb ${GH_PROXY}https://github.com/Jonathan143/sb-ins
 |---|---|
 | `sb` | 主菜单 |
 | `sb config` | 查看 sing-box 运行配置文件 |
-| `sb add` | 新增节点 |
+| `sb add` / `sb add --protocol ...` | 交互 / 无交互新增节点，参数见 `sb add --help` |
 | `sb list` | 列出所有节点和监听状态 |
 | `sb info [编号]` | 查看分享链接、二维码、客户端 outbound JSON |
 | `sb edit [编号]` | 修改端口、SNI/证书、Flow、multiplex、UUID/密码、连接地址、备注等 |
 | `sb del [编号]` | 删除节点（同时关闭防火墙端口，可选清理证书） |
 | `sb status` | 服务状态、内核版本、节点监听、证书到期时间 |
+| `sb doctor` | 只读检查依赖、内核、配置、服务、监听和证书，发现异常返回非零 |
 | `sb log [-f]` | 查看日志，`-f` 实时跟踪 |
 | `sb start` / `stop` / `restart` | 服务控制（启动和重启前会先校验配置） |
 | `sb dns` / `sb dns show` | 修改 / 查看系统 DNS |
@@ -157,7 +195,7 @@ curl -fsSL -o /usr/local/bin/sb ${GH_PROXY}https://github.com/Jonathan143/sb-ins
 - 检测范围可选「快速检测」（默认，10 个）或「检测全部」（26 个），不设分类选择菜单。进度、结果和手动候选列表显示「日本高校」「Linux 镜像」等分类；未收录的域名显示「自定义域名」。
 - 快速候选为 `www.u-tokyo.ac.jp`、`www.nus.edu.sg`、`www.stanford.edu`、`www.ox.ac.uk`、`dl-cdn.alpinelinux.org`、`www.python.org`、`pypi.org`、`addons.mozilla.org`、`www.lovelive-anime.jp`、`www.cathaypacific.com`。全部候选还包含其他高校、Debian、Rust、Ruby、Perl 和 Homebrew 域名。
 - 修改节点时，无论选择哪种范围，都会补测当前 SNI 并在结果中标记「当前」；已在候选中的域名不重复检测，因此快速检测最多会测 11 个域名。
-- 选择检测范围后可交互输入并发数（1–4，回车默认 4，`0` / `q` 取消）。也可通过 `SNI_CONCURRENCY=2 sb` 调整输入框默认值。资源受限时可选择 1 或 2。每个域名测试 3 次，单次超时 2 秒，另设 1 秒强制结束宽限。测试会显示逐域名进度；检测到 cgroup v2 进程额度不足时自动降低并发，无法启动单路检测时停止并提示。每轮都检查 TLS 1.3、h2、证书信任与域名匹配。
+- 选择检测范围后可交互输入并发数（1–4，回车默认 4，`0` / `q` 取消）。也可通过 `SNI_CONCURRENCY=2 sb` 调整输入框默认值。资源受限时可选择 1 或 2。每个域名测试 3 次，单次超时 2 秒，另设 1 秒强制结束宽限。测试会显示逐域名进度；根据 cgroup v1/v2 及可见父级的 PID、内存额度和系统可用内存自动降低并发；内存预算保留 16 MiB，每个任务按 24 MiB 估算，无法启动单路检测时停止并提示。每轮都检查 TLS 1.3、X25519、h2、证书信任与域名匹配。
 - 连续 3 次通过的域名按平均连接及 TLS 握手耗时升序排名，第一名标记「本轮最快」。节点选择时输入排名，或回车使用第一名；部分成功及失败结果单独标明，不参与排名。
 - 结果页输入 `r` 按本次范围和并发数重测、`s` 切换范围并调整并发数、`0` / `q` 返回。节点选择时还可输入 `m` 手动选择/输入；手动域名检测失败时，只有明确确认后才会使用。
 

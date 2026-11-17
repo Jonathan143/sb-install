@@ -284,3 +284,13 @@ cert_flow() {
     *) err "无效选择"; return 1 ;;
   esac
 }
+
+# Strict validation for unattended imports; the interactive flow keeps its prompts.
+cert_manual_validate() {
+  local cert=$1 key=$2 domain=$3 cert_pub key_pub
+  cert_pub=$(openssl x509 -in "$cert" -noout -pubkey) || { err '证书格式错误'; return 1; }
+  key_pub=$(openssl pkey -in "$key" -passin pass: -pubout) || { err '私钥不可读或需要密码'; return 1; }
+  [[ $cert_pub == "$key_pub" ]] || { err '证书与私钥不匹配'; return 1; }
+  openssl x509 -in "$cert" -noout -checkhost "$domain" | grep -q 'does match' || { err '证书域名不匹配'; return 1; }
+  openssl x509 -in "$cert" -noout -checkend 0 >/dev/null || { err '证书已过期'; return 1; }
+}

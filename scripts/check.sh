@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
+sh -n install.sh
 for script in sb.sh lib/*.sh scripts/*.sh tests/*.sh; do
   bash -n "$script"
 done

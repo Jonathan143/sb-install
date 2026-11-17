@@ -228,9 +228,13 @@ update_script() {
 }
 
 uninstall_all() {
-  local id
+  local entry
   confirm "确认卸载 sing-box 及 sb 命令?" n || return 0
-  for id in $(list_ids); do meta_load "$id" && fw_close "$N_LPORT" "$(proto_net)"; done
+  if [[ -f $SB_DIR/firewall.rules ]]; then
+    while IFS= read -r entry; do
+      fw_remove_entry "$entry" || { err "防火墙清理失败，已停止卸载并保留记录"; return 1; }
+    done < "$SB_DIR/firewall.rules"
+  fi
   svc stop >/dev/null 2>&1; svc disable >/dev/null 2>&1
   rm -f /etc/systemd/system/$SB_SERVICE.service /etc/init.d/$SB_SERVICE "$SB_BIN" "$SB_BIN.bak"
   has_systemd && systemctl daemon-reload

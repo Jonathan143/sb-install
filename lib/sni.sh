@@ -43,7 +43,7 @@ check_sni() { # 域名 [超时秒数]；SNI_FAILURE 返回失败原因
   # Capture to a file: avoid a command-substitution shell and concurrent tr.
   # GNU timeout supervises OpenSSL with a hard-kill grace period.
   if LC_ALL=C timeout -k 1 "${2:-8}" openssl s_client -connect "$1:443" \
-    -servername "$1" -tls1_3 -alpn h2 -verify_hostname "$1" \
+    -servername "$1" -tls1_3 -groups X25519 -alpn h2 -verify_hostname "$1" \
     -verify_return_error </dev/null >"$output" 2>/dev/null; then rc=0; else rc=$?; fi
   if ((rc == 0)); then
     while IFS= read -r line || [[ -n $line ]]; do
@@ -111,45 +111,79 @@ sni_ask_concurrency() {
   printf '%s\n' "$value"
 }
 
-sni_pid_budget() { # cgroup v2 PID headroom, including ancestor limits
-  local path="" hierarchy controllers entry dir current limit available
-  SNI_PID_AVAILABLE=""
-  if [[ -r /proc/self/cgroup ]]; then
+# Read the tightest visible ancestor limit for a cgroup controller.
+sni_cgroup_budget() { # controller -> SNI_CGROUP_AVAILABLE (bytes or tasks)
+  local controller=$1 hierarchy controllers entry path='' version=2 root dir current limit available
+  local limit_file current_file
+  SNI_CGROUP_AVAILABLE=''
+  root=${SNI_CGROUP_ROOT:-/sys/fs/cgroup}
+  if [[ -r ${SNI_PROC_ROOT:-/proc}/self/cgroup ]]; then
     while IFS=: read -r hierarchy controllers entry; do
-      [[ $hierarchy != 0 ]] || path=$entry
-    done < /proc/self/cgroup
+      if [[ $hierarchy == 0 ]]; then path=$entry; version=2; fi
+      if [[ ,$controllers, == *,$controller,* ]]; then path=$entry; version=1; break; fi
+    done < "${SNI_PROC_ROOT:-/proc}/self/cgroup"
   fi
-  dir="/sys/fs/cgroup${path%/}"
-  while [[ $dir == /sys/fs/cgroup* ]]; do
-    if [[ -r $dir/pids.max && -r $dir/pids.current ]]; then
-      IFS= read -r limit < "$dir/pids.max"
-      IFS= read -r current < "$dir/pids.current"
+  if [[ $version == 1 ]]; then root="$root/$controller"; fi
+  if [[ $controller == memory && $version == 1 ]]; then
+    limit_file=memory.limit_in_bytes; current_file=memory.usage_in_bytes
+  else limit_file=$controller.max; current_file=$controller.current; fi
+  dir="$root${path%/}"
+  while [[ $dir == "$root" || $dir == "$root/"* ]]; do
+    if [[ -r $dir/$limit_file && -r $dir/$current_file ]]; then
+      IFS= read -r limit < "$dir/$limit_file"
+      IFS= read -r current < "$dir/$current_file"
       if [[ $limit =~ ^[0-9]+$ && $current =~ ^[0-9]+$ ]]; then
         available=$((limit - current))
-        if [[ -z $SNI_PID_AVAILABLE ]] || ((available < SNI_PID_AVAILABLE)); then
-          SNI_PID_AVAILABLE=$available
+        if [[ -z $SNI_CGROUP_AVAILABLE ]] || ((available < SNI_CGROUP_AVAILABLE)); then
+          SNI_CGROUP_AVAILABLE=$available
         fi
       fi
     fi
-    [[ $dir != /sys/fs/cgroup ]] || break
+    [[ $dir != "$root" ]] || break
     dir=${dir%/*}
   done
 }
-
+sni_pid_budget() {
+  sni_cgroup_budget pids
+  SNI_PID_AVAILABLE=$SNI_CGROUP_AVAILABLE
+}
+sni_memory_budget() {
+  local key value unit
+  SNI_MEMORY_AVAILABLE=''
+  if [[ -r ${SNI_PROC_ROOT:-/proc}/meminfo ]]; then
+    while read -r key value unit; do
+      if [[ $key == MemAvailable: && $value =~ ^[0-9]+$ ]]; then
+        SNI_MEMORY_AVAILABLE=$((value * 1024)); break
+      fi
+    done < "${SNI_PROC_ROOT:-/proc}/meminfo"
+  fi
+  sni_cgroup_budget memory
+  if [[ -n $SNI_CGROUP_AVAILABLE ]] && { [[ -z $SNI_MEMORY_AVAILABLE ]] || ((SNI_CGROUP_AVAILABLE < SNI_MEMORY_AVAILABLE)); }; then
+    SNI_MEMORY_AVAILABLE=$SNI_CGROUP_AVAILABLE
+  fi
+}
 sni_limit_concurrency() {
   local capacity
   sni_pid_budget
+  sni_memory_budget
   SNI_EFFECTIVE_CONCURRENCY=$1
-  [[ -n $SNI_PID_AVAILABLE ]] || return 0
-  # Reserve room for bookkeeping; each worker also needs timeout/watchdog/OpenSSL.
-  capacity=$(((SNI_PID_AVAILABLE - 4) / 5))
-  if ((capacity < 1)); then
-    warn "容器剩余进程额度不足（剩余 ${SNI_PID_AVAILABLE}），已停止测试；请先结束旧测试或提高容器 PID 上限"
-    return 1
+  if [[ -n $SNI_PID_AVAILABLE ]]; then
+    # Each worker also needs timeout/watchdog/OpenSSL; reserve bookkeeping tasks.
+    capacity=$(((SNI_PID_AVAILABLE - 4) / 5))
+    if ((capacity < 1)); then
+      warn "容器剩余进程额度不足（剩余 ${SNI_PID_AVAILABLE}），已停止测试"
+      return 1
+    fi
+    ((capacity >= SNI_EFFECTIVE_CONCURRENCY)) || SNI_EFFECTIVE_CONCURRENCY=$capacity
   fi
-  if ((capacity < SNI_EFFECTIVE_CONCURRENCY)); then
-    SNI_EFFECTIVE_CONCURRENCY=$capacity
-    warn "容器剩余进程额度为 ${SNI_PID_AVAILABLE}，并发数已从 $1 降为 $capacity"
+  if [[ -n $SNI_MEMORY_AVAILABLE ]]; then
+    # Reserve 16 MiB for bookkeeping and budget 24 MiB per probe worker.
+    capacity=$(((SNI_MEMORY_AVAILABLE - 16 * 1024 * 1024) / (24 * 1024 * 1024)))
+    if ((capacity < 1)); then warn '可用内存不足 40 MiB，已停止 SNI 测试'; return 1; fi
+    ((capacity >= SNI_EFFECTIVE_CONCURRENCY)) || SNI_EFFECTIVE_CONCURRENCY=$capacity
+  fi
+  if ((SNI_EFFECTIVE_CONCURRENCY < $1)); then
+    warn "受进程或内存额度限制，并发数已从 $1 降为 $SNI_EFFECTIVE_CONCURRENCY"
   fi
 }
 

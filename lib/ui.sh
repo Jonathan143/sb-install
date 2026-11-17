@@ -19,6 +19,7 @@ ui_section() { local RED GREEN YELLOW CYAN PLAIN BOLD DIM; ui_colors 1; printf '
 ui_item() { local RED GREEN YELLOW CYAN PLAIN BOLD DIM; ui_colors 1; printf '  %s%2s%s  %s\n' "$CYAN" "$1" "$PLAIN" "$2"; }
 ask() { local RED GREEN YELLOW CYAN PLAIN BOLD DIM; ui_colors 2;
   local a
+  [[ ${SB_NON_INTERACTIVE:-0} != 1 ]] || { err "无交互操作缺少参数: $1"; return 1; }
   printf '%s › %s%s: %s' "$CYAN" "$1" "${2:+ [$2]}" "$PLAIN" >&2
   if [[ -t 0 ]]; then
     IFS= read -r -e a || return 1

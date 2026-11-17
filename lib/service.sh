@@ -117,3 +117,64 @@ service_menu() {
     4) svc enable && info "已开启开机自启" ;; 5) svc disable && info "已关闭开机自启" ;;
   esac
 }
+
+readonly_require() {
+  local tool failed=0
+  for tool in "$@"; do
+    command -v "$tool" >/dev/null || { err "缺少查询工具: $tool"; failed=1; }
+  done
+  return "$failed"
+}
+readonly_dispatch() {
+  case $1 in
+    status) readonly_require ss openssl && show_status ;;
+    doctor) show_doctor ;;
+    config) readonly_require jq && show_runtime_config ;;
+    list|ls) readonly_require ss && list_nodes ;;
+    info) readonly_require jq openssl && select_node "${2:-}" && show_node "$SEL_ID" ;;
+    log|logs) show_log "${2:-}" ;;
+  esac
+}
+show_doctor() {
+  local failed=0 tool version id files=0
+  local N_ID N_PROTO N_LPORT N_PPORT N_HOST N_DOMAIN N_SNI N_UUID N_PASS N_FLOW N_MUX
+  local N_PRIV N_PBK N_SID N_WSPATH N_CERTMODE N_CERT N_KEY N_INSECURE N_ACMEV
+  local N_OBFS N_HOP_PORTS N_HOP_INTERVAL N_METHOD N_NOTE N_CREATED
+  printf 'sb v%s  配置模式: %s\n' "$SB_VERSION" "$SB_MODE"
+  for tool in jq ss openssl; do
+    if command -v "$tool" >/dev/null; then printf '[通过] 工具 %s\n' "$tool"
+    else printf '[失败] 缺少工具 %s\n' "$tool"; failed=1; fi
+  done
+  if version=$(core_version); then
+    printf '[通过] 内核可执行: %s\n' "$version"
+    if [[ -d $CONF_DIR || ( $SB_MODE == coexist && -f $SB_DIR/config.json ) ]]; then
+      sb_args
+      if "$SB_BIN" "${SB_ARGS[@]}" check; then printf '[通过] 配置校验\n'
+      else printf '[失败] 配置校验\n'; failed=1; fi
+    else printf '[失败] 未找到配置目录\n'; failed=1; fi
+  else printf '[失败] 内核缺失或无法执行: %s\n' "$SB_BIN"; failed=1; fi
+  if has_systemd; then printf '[通过] 服务管理器: systemd\n'
+  elif command -v rc-service >/dev/null && [[ -f /run/openrc/softlevel ]]; then
+    printf '[通过] 服务管理器: OpenRC\n'
+  else printf '[失败] 未检测到运行中的 systemd/OpenRC\n'; failed=1; fi
+  if svc is-active; then printf '[通过] sing-box 服务运行中\n'
+  else printf '[失败] sing-box 服务未运行\n'; failed=1; fi
+  for id in $(list_ids); do
+    meta_load "$id" || { printf '[失败] 节点 %s 元数据不可读\n' "$id"; failed=1; continue; }
+    files=$((files + 1))
+    if command -v ss >/dev/null; then
+      if port_listening "$N_LPORT" "$(proto_net)"; then printf '[通过] 节点 %s 监听 %s/%s\n' "$id" "$N_LPORT" "$(proto_net)"
+      else printf '[失败] 节点 %s 端口未完整监听\n' "$id"; failed=1; fi
+    fi
+    if [[ $N_CERTMODE == builtin ]]; then
+      printf '[信息] 节点 %s 证书由内核 ACME 管理\n' "$id"
+    elif [[ -n $N_CERT ]] && command -v openssl >/dev/null; then
+      if cert_manual_validate "$N_CERT" "$N_KEY" "$N_DOMAIN"; then
+        printf '[通过] 节点 %s 证书到期: %s\n' "$id" "$(cert_expiry "$N_CERT")"
+        if ! cert_valid "$N_CERT"; then printf '[失败] 节点 %s 证书将在 30 天内到期\n' "$id"; failed=1; fi
+      else printf '[失败] 节点 %s 证书检查\n' "$id"; failed=1; fi
+    fi
+  done
+  printf '已检查 %s 个托管节点\n' "$files"
+  return "$failed"
+}

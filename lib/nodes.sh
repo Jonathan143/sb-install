@@ -112,12 +112,12 @@ add_node_impl() {
   NODE_FILES_CHANGED=1
   meta_save || return 1
   write_node_conf || { err "生成配置失败"; restore_snapshot; return 1; }
-  fw_open "$N_LPORT" "$(proto_net)"
+  fw_open "$N_LPORT" "$(proto_net)" || return 1
   if apply_config; then
+    NODE_CHANGE_COMMITTED=1
     info "节点已添加并生效"
     show_node "$added_id"
   else
-    fw_close "$N_LPORT" "$(proto_net)"
     return 1
   fi
 }
@@ -171,12 +171,14 @@ edit_node_impl() {
   meta_save || return 1
   write_node_conf || { restore_snapshot; return 1; }
   new_l=$N_LPORT
-  if [[ $new_l != "$old_l" ]]; then fw_open "$new_l" "$old_net"; fi
+  if [[ $new_l != "$old_l" ]]; then fw_open "$new_l" "$old_net" || return 1; fi
   if apply_config; then
-    if [[ $new_l != "$old_l" ]]; then fw_close "$old_l" "$old_net"; fi
+    NODE_CHANGE_COMMITTED=1
+    if [[ $new_l != "$old_l" ]]; then
+      fw_close "$old_l" "$old_net" || { err "修改已生效，但旧端口规则清理失败，已保留记录"; return 1; }
+    fi
     info "修改已生效"; show_node "$SEL_ID"
   else
-    if [[ $new_l != "$old_l" ]]; then fw_close "$new_l" "$old_net"; fi
     err "修改未生效"; return 1
   fi
 }
@@ -200,7 +202,8 @@ delete_node_impl() {
   else
     apply_config || return 1
   fi
-  fw_close "$port" "$net"
+  NODE_CHANGE_COMMITTED=1
+  fw_close "$port" "$net" || { err "节点已删除，但防火墙规则清理失败，已保留记录"; return 1; }
   info "节点 $id 已删除"
   # 证书清理：该域名不再被其它节点使用时询问
   if [[ -n $dom && $mode != builtin && $mode != manual ]]; then

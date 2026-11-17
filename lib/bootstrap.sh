@@ -25,6 +25,7 @@ ensure_init() {
   chmod 700 "$SB_DIR"
   if [[ ! -f $SB_CONF ]]; then
     if [[ -f $SB_DIR/config.json ]]; then
+      [[ ${SB_NON_INTERACTIVE:-0} != 1 ]] || { err "检测到旧 config.json，请先交互选择接管或共存模式"; return 1; }
       echo
       warn "检测到已有配置 $SB_DIR/config.json（非本脚本生成）"
       echo "  1) 备份后由脚本接管（旧配置备份为 config.json.bak.时间，不再加载）"

@@ -75,3 +75,38 @@ if LC_ALL=C grep -q $'\033' "$ROOT/title" "$ROOT/info"; then fail 'render retain
 NO_COLOR=1
 ui_colors 1
 [[ -z $RED$GREEN$CYAN$PLAIN ]] || fail 'NO_COLOR ignored'
+
+# Read-only dispatch must never acquire the mutation lock, bootstrap, or install.
+(
+  source "$(dirname "$0")/../sb.sh"
+  SB_DIR="$ROOT/read-only-missing"; SB_CONF="$SB_DIR/sb.conf"
+  META_DIR="$SB_DIR/meta" CONF_DIR="$SB_DIR/conf.d"
+  acquire_lock() { fail 'read-only acquired lock'; }
+  bootstrap() { fail 'read-only bootstrapped'; }
+  readonly_require() { :; }
+  show_status() { echo status; }; show_doctor() { echo doctor; }
+  show_runtime_config() { echo config; }; list_nodes() { echo list; }
+  show_log() { echo log; }; route_show() { echo route; }
+  for action in status doctor config list log; do
+    [[ $(main "$action") == "$action" ]] || fail 'read-only dispatch'
+  done
+  [[ $(main route show) == route ]] || fail 'route read-only dispatch'
+  [[ ! -e $SB_DIR ]] || fail 'read-only created state directory'
+  if main add --protocol ss --port 65536; then fail 'invalid add arguments reached bootstrap'; fi
+)
+
+(
+  source "$(dirname "$0")/../sb.sh"
+  SB_DIR="$ROOT/doctor" SB_MODE=takeover
+  CONF_DIR="$SB_DIR/conf.d" META_DIR="$SB_DIR/meta"
+  mkdir -p "$CONF_DIR" "$META_DIR"
+  core_version() { echo 1.14.4; }
+  doctor_test_core() { [[ ${*: -1} == check ]]; }
+  SB_BIN=doctor_test_core
+  ss() { :; }; has_systemd() { return 0; }; svc() { return 0; }
+  show_doctor > "$ROOT/doctor-result" || fail 'healthy diagnosis failed'
+  grep -q '已检查 0 个托管节点' "$ROOT/doctor-result" || fail 'diagnostic summary'
+  svc() { return 1; }
+  if show_doctor > "$ROOT/doctor-result"; then fail 'inactive service diagnosis succeeded'; fi
+  grep -q '服务未运行' "$ROOT/doctor-result" || fail 'missing service diagnosis'
+)

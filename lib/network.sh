@@ -64,28 +64,143 @@ ask_pub_port() { # 默认值
   done
 }
 
+# Ledger entries: backend|scope|zone|port|protocol. Only rules created by sb
+# are owned; keep this ledger outside configuration snapshots.
+fw_record() {
+  local entry=$1 tmp
+  mkdir -p "$SB_DIR" || return 1
+  tmp=$(mktemp "$SB_DIR/.firewall.XXXXXX") || return 1
+  if ! { if [[ -f $SB_DIR/firewall.rules ]]; then cat "$SB_DIR/firewall.rules" || { rm -f "$tmp"; return 1; }; fi; printf '%s\n' "$entry"; } > "$tmp" ||
+     ! chmod 600 "$tmp" || ! mv -f "$tmp" "$SB_DIR/firewall.rules"; then
+    rm -f "$tmp"; return 1
+  fi
+}
+fw_forget() {
+  local tmp
+  tmp=$(mktemp "$SB_DIR/.firewall.XXXXXX") || return 1
+  if ! awk -v entry="$1" '$0 != entry' "$SB_DIR/firewall.rules" > "$tmp" ||
+     ! chmod 600 "$tmp" || ! mv -f "$tmp" "$SB_DIR/firewall.rules"; then
+    rm -f "$tmp"; return 1
+  fi
+}
+fw_has_rule() { # 0 present, 1 absent, 2 inspection failed
+  local backend=$1 scope=$2 zone=$3 port=$4 proto=$5 output rc
+  local args=()
+  case $backend in
+    ufw)
+      output=$(LC_ALL=C ufw status) || return 2
+      [[ $output == *'Status: active'* ]] || return 2
+      awk -v rule="$port/$proto" '
+        $1 == rule {
+          i=2; if ($i == "(v6)") i++
+          if ($i != "ALLOW") next
+          i++; if ($i == "IN") i++
+          if ($i == "Anywhere") found=1
+        }
+        END {exit !found}' <<< "$output" ;;
+    firewalld)
+      [[ $scope != permanent ]] || args+=(--permanent)
+      firewall-cmd ${args[@]+"${args[@]}"} --zone="$zone" --query-port="$port/$proto" >/dev/null 2>&1 && return 0
+      rc=$?; ((rc == 1)) && return 1; return 2 ;;
+    iptables)
+      iptables -S INPUT >/dev/null 2>&1 || return 2
+      iptables -C INPUT -p "$proto" --dport "$port" -j ACCEPT >/dev/null 2>&1 && return 0
+      rc=$?; ((rc == 1)) && return 1; return 2 ;;
+    *) return 2 ;;
+  esac
+}
+fw_change_rule() {
+  local action=$1 backend=$2 scope=$3 zone=$4 port=$5 proto=$6
+  local args=()
+  case $backend in
+    ufw)
+      [[ $action != remove ]] || args+=(delete)
+      ufw ${args[@]+"${args[@]}"} allow "$port/$proto" >/dev/null ;;
+    firewalld)
+      [[ $scope != permanent ]] || args+=(--permanent)
+      firewall-cmd ${args[@]+"${args[@]}"} --zone="$zone" "--$action-port=$port/$proto" >/dev/null ;;
+    iptables)
+      [[ $action == add ]] && action=-I || action=-D
+      iptables "$action" INPUT -p "$proto" --dport "$port" -j ACCEPT ;;
+  esac
+}
+fw_ensure_rule() {
+  local backend=$1 scope=$2 zone=$3 port=$4 proto=$5 rc entry="$1|$2|$3|$4|$5"
+  fw_has_rule "$@" && return 0
+  rc=$?
+  ((rc == 1)) || { err "无法查询防火墙规则: $entry"; return 1; }
+  if ! grep -Fxq "$entry" "$SB_DIR/firewall.rules" 2>/dev/null; then
+    fw_record "$entry" || return 1
+  fi
+  # Record before mutation, including partial failures, so rollback can clean up.
+  NODE_FW_ADDED+=("$entry")
+  if ! fw_change_rule add "$@" || ! fw_has_rule "$@"; then
+    err "防火墙放行失败: $port/$proto ($backend/$scope)"; return 1
+  fi
+}
+fw_remove_entry() {
+  local backend scope zone port proto rc
+  IFS='|' read -r backend scope zone port proto <<< "$1"
+  if fw_has_rule "$backend" "$scope" "$zone" "$port" "$proto"; then
+    fw_change_rule remove "$backend" "$scope" "$zone" "$port" "$proto" || return 1
+    fw_has_rule "$backend" "$scope" "$zone" "$port" "$proto" && return 1
+    rc=$?
+  else rc=$?; fi
+  ((rc == 1)) || { err "无法确认规则已清理，保留记录: $1"; return 1; }
+  fw_forget "$1"
+}
 fw_open() { # port tcp|udp|both
-  if [[ $2 == both ]]; then fw_open "$1" tcp; fw_open "$1" udp; return $?; fi
-  if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
-    ufw allow "$1/$2" >/dev/null && info "ufw 已放行 $1/$2"
-  elif command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then
-    firewall-cmd --permanent --add-port="$1/$2" >/dev/null && firewall-cmd --reload >/dev/null && info "firewalld 已放行 $1/$2"
-  elif command -v iptables >/dev/null && iptables -S INPUT 2>/dev/null | grep -Eq -- '-P INPUT (DROP|REJECT)|-j (DROP|REJECT)'; then
-    iptables -C INPUT -p "$2" --dport "$1" -j ACCEPT 2>/dev/null || iptables -I INPUT -p "$2" --dport "$1" -j ACCEPT
-    info "iptables 已放行 $1/$2（如需持久化请自行保存规则）"
+  local status zone
+  if [[ $2 == both ]]; then fw_open "$1" tcp && fw_open "$1" udp; return $?; fi
+  if command -v ufw >/dev/null; then
+    status=$(LC_ALL=C ufw status) || { err '无法读取 ufw 状态'; return 1; }
+    if [[ $status == *'Status: active'* ]]; then fw_ensure_rule ufw runtime - "$@"; return $?; fi
+  fi
+  if command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then
+    zone=$(firewall-cmd --get-default-zone) || return 1
+    fw_ensure_rule firewalld permanent "$zone" "$@" && fw_ensure_rule firewalld runtime "$zone" "$@"
+    return $?
+  fi
+  if command -v iptables >/dev/null; then
+    status=$(iptables -S INPUT) || { err '无法读取 iptables 状态'; return 1; }
+    if grep -Eq -- '-P INPUT (DROP|REJECT)|-j (DROP|REJECT)' <<< "$status"; then
+      fw_ensure_rule iptables runtime - "$@" || return 1
+    fi
   fi
   return 0
 }
-fw_close() {
-  if [[ $2 == both ]]; then fw_close "$1" tcp; fw_close "$1" udp; return $?; fi
-  if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
-    ufw delete allow "$1/$2" >/dev/null 2>&1
-  elif command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then
-    firewall-cmd --permanent --remove-port="$1/$2" >/dev/null 2>&1; firewall-cmd --reload >/dev/null 2>&1
-  elif command -v iptables >/dev/null; then
-    iptables -D INPUT -p "$2" --dport "$1" -j ACCEPT 2>/dev/null
+fw_port_referenced() (
+  local id net
+  for id in $(list_ids); do
+    meta_load "$id" || return 2
+    net=$(proto_net)
+    [[ $N_LPORT != "$1" || ( $net != "$2" && $net != both ) ]] || return 0
+  done
+  if [[ ${SB_MODE:-takeover} == coexist && -f $SB_DIR/config.json ]]; then
+    # A legacy inbound on the same port keeps the administrator's access intact.
+    jq -e --argjson port "$1" 'any(.inbounds[]?; .listen_port == $port)' "$SB_DIR/config.json" >/dev/null
+    case $? in 0) return 0 ;; 1) ;; *) return 2 ;; esac
   fi
-  return 0
+  return 1
+)
+fw_close() {
+  local entry backend scope zone port proto rc failed=0
+  if [[ $2 == both ]]; then
+    fw_close "$1" tcp || failed=1
+    fw_close "$1" udp || failed=1
+    return "$failed"
+  fi
+  if [[ ${FW_UNINSTALL:-0} != 1 ]]; then
+    fw_port_referenced "$@" && return 0
+    rc=$?; ((rc == 1)) || return 1
+  fi
+  [[ -f $SB_DIR/firewall.rules ]] || return 0
+  while IFS= read -r entry; do
+    IFS='|' read -r backend scope zone port proto <<< "$entry"
+    [[ $port == "$1" && $proto == "$2" ]] || continue
+    fw_remove_entry "$entry" || failed=1
+  done < "$SB_DIR/firewall.rules"
+  return "$failed"
 }
 
 detect_ip() {

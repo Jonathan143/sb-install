@@ -81,13 +81,85 @@ done
   port_listening 24443 both || fail 'dual listener not detected'
 ) || exit 1
 
-# Stub the firewall executable, retaining real TCP/UDP dispatch.
+# Preserve pre-existing rules, own only additions, and retain failed cleanup records.
 (
-  ufw() { if [[ $1 == status ]]; then echo 'Status: active'; else echo "$*" >> "$ROOT/firewall"; fi; }
-  fw_open 24443 both; fw_close 24443 both
-  for expected in 'allow 24443/tcp' 'allow 24443/udp' 'delete allow 24443/tcp' 'delete allow 24443/udp'; do
-    grep -Fxq "$expected" "$ROOT/firewall" || fail "missing $expected"
-  done
+  SB_DIR="$ROOT/firewall-state"; mkdir -p "$SB_DIR"
+  NODE_FW_ADDED=(); FW_UNINSTALL=1
+  ufw() {
+    case $1 in
+      status)
+        [[ ${query_fail:-0} == 0 ]] || return 1
+        echo 'Status: active'
+        echo '24443/tcp ALLOW IN 192.0.2.1'
+        echo '24443/udp (v6) ALLOW IN 2001:db8::1'
+        [[ ! -e $SB_DIR/tcp ]] || echo '24443/tcp ALLOW Anywhere'
+        [[ ! -e $SB_DIR/udp ]] || echo '24443/udp ALLOW Anywhere'
+        return 0 ;;
+      allow) touch "$SB_DIR/${2##*/}"; [[ ${add_fail:-0} == 0 || $2 != */udp ]] ;;
+      delete) [[ ${delete_fail:-0} == 0 ]] || return 1; rm -f "$SB_DIR/${3##*/}" ;;
+      *) return 1 ;;
+    esac
+  }
+  touch "$SB_DIR/tcp"
+  fw_open 24443 both || fail 'dual protocol opening'
+  [[ $(cat "$SB_DIR/firewall.rules") == 'ufw|runtime|-|24443|udp' ]] || fail 'claimed existing rule'
+  delete_fail=1
+  if fw_close 24443 both; then fail 'cleanup failure hidden'; fi
+  [[ -s $SB_DIR/firewall.rules ]] || fail 'lost cleanup record'
+  delete_fail=0
+  fw_close 24443 both || fail 'cleanup retry'
+  [[ -e $SB_DIR/tcp && ! -e $SB_DIR/udp && ! -s $SB_DIR/firewall.rules ]] || fail 'removed existing rule'
+  query_fail=1
+  if fw_open 24443 tcp; then fail 'query failure hidden'; fi
+  query_fail=0; add_fail=1
+  svc() { return 1; }
+  if node_change fw_open 24443 both; then fail 'partial firewall failure accepted'; fi
+  [[ -e $SB_DIR/tcp && ! -e $SB_DIR/udp && ! -s $SB_DIR/firewall.rules ]] || fail 'partial failure rollback removed existing rule'
+  add_fail=0
+  fw_open 24443 both || fail 'reopen rule'
+  FW_UNINSTALL=0
+  fw_port_referenced() { return 0; }
+  fw_close 24443 udp || fail 'shared reference check'
+  [[ -e $SB_DIR/udp ]] || fail 'shared rule removed'
+) || exit 1
+
+# firewalld scopes are independent; never reload or claim an existing permanent rule.
+(
+  SB_DIR="$ROOT/firewalld-state"; mkdir -p "$SB_DIR"
+  NODE_FW_ADDED=()
+  firewall-cmd() {
+    local scope=runtime arg
+    for arg in "$@"; do [[ $arg != --permanent ]] || scope=permanent; done
+    case ${*: -1} in
+      --query-port=*) [[ -f $SB_DIR/$scope ]] ;;
+      --add-port=*) touch "$SB_DIR/$scope" ;;
+      --remove-port=*) rm -f "$SB_DIR/$scope" ;;
+      *) fail 'unexpected firewalld operation' ;;
+    esac
+  }
+  touch "$SB_DIR/permanent"
+  fw_ensure_rule firewalld permanent public 24443 tcp || fail 'existing permanent rule'
+  fw_ensure_rule firewalld runtime public 24443 tcp || fail 'runtime rule'
+  [[ ${#NODE_FW_ADDED[@]} == 1 ]] || fail 'claimed permanent scope'
+  fw_remove_entry "${NODE_FW_ADDED[0]}" || fail 'runtime cleanup'
+  [[ -f $SB_DIR/permanent && ! -f $SB_DIR/runtime ]] || fail 'scope cleanup'
+) || exit 1
+
+# iptables inspection failures must not be interpreted as missing rules.
+(
+  SB_DIR="$ROOT/iptables-state"; mkdir -p "$SB_DIR"; NODE_FW_ADDED=()
+  iptables() {
+    case $1 in
+      -S) [[ ${query_fail:-0} == 0 ]] ;;
+      -C) [[ -f $SB_DIR/rule ]] ;;
+      -I) touch "$SB_DIR/rule" ;;
+      -D) rm -f "$SB_DIR/rule" ;;
+    esac
+  }
+  fw_ensure_rule iptables runtime - 24443 tcp || fail 'iptables add'
+  fw_remove_entry "${NODE_FW_ADDED[0]}" || fail 'iptables cleanup'
+  query_fail=1
+  if fw_ensure_rule iptables runtime - 24443 tcp; then fail 'iptables query failure accepted'; fi
 ) || exit 1
 
 # Actual add/edit/delete entry points, with system effects stubbed.
@@ -135,8 +207,8 @@ done
   cp "$META_DIR/1.env" "$ROOT/before.env"
   cp "$(conf_file)" "$ROOT/before.json"
   ask() { echo 1; }; pick_port() { PICKED=25555; }; ask_pub_port() { echo 35555; }
-  fw_open() { echo "open $*" >> "$ROOT/rollback-fw"; }
-  fw_close() { echo "close $*" >> "$ROOT/rollback-fw"; }
+  fw_open() { echo "open $*" >> "$ROOT/rollback-fw"; NODE_FW_ADDED+=("$*"); }
+  fw_remove_entry() { echo "close $*" >> "$ROOT/rollback-fw"; }
   apply_config() { restore_snapshot; return 1; }
   if edit_node 1 > "$ROOT/rollback" 2>&1; then fail 'edit failure accepted'; fi
   cmp "$META_DIR/1.env" "$ROOT/before.env" || fail 'rollback metadata'
@@ -152,3 +224,64 @@ done
   if add_node > "$ROOT/old-core" 2>&1; then fail 'old core accepted'; fi
 ) || exit 1
 echo 'PASS: AnyTLS Reality and Shadowsocks regression tests'
+
+# Unattended paths produce all supported protocols with supplied NAT addresses.
+for proto in reality ws hy2 tuic anytls anytls-reality ss; do
+(
+  SB_DIR="$ROOT/cli-$proto"; CONF_DIR="$SB_DIR/conf.d"; META_DIR="$SB_DIR/meta"
+  CERT_DIR="$SB_DIR/certs"; BACKUP_DIR="$SB_DIR/backup"
+  mkdir -p "$CONF_DIR" "$META_DIR" "$CERT_DIR" "$BACKUP_DIR"
+  SB_NON_INTERACTIVE=1 SB_MODE=takeover
+  core_version() { echo 1.14.4; }; svc() { return 1; }
+  port_in_use() { return 1; }; gen_uuid() { echo 00000000-0000-4000-8000-000000000001; }
+  generate_reality_keys() { N_PRIV=private N_PBK=public N_SID=0123456789abcdef; }
+  apply_config() { write_nodes_txt; }; show_node() { :; }
+  fw_open() { fail 'firewall skip ignored'; }
+  args=(--protocol "$proto" --port 24443 --public-port 34443 --address 2001:db8::1 --firewall skip)
+  case $proto in reality|anytls-reality) args+=(--sni www.example.com) ;; esac
+  parse_add_cli "${args[@]}" || fail 'CLI parse'
+  add_node_cli || fail "CLI add $proto"
+  meta_load 1 || fail 'CLI metadata'
+  [[ $N_PROTO == "$proto" && $N_LPORT == 24443 && $N_PPORT == 34443 && $N_HOST == 2001:db8::1 ]] || fail 'CLI NAT settings'
+  jq -e '.inbounds[0].listen_port == 24443' "$(conf_file)" >/dev/null || fail 'CLI configuration'
+  [[ -s $SB_DIR/nodes.txt ]] || fail 'CLI sharing output'
+) || exit 1
+done
+
+(
+  printf 'literal-password-$()\n' > "$ROOT/password"
+  parse_add_cli --protocol ss --password-file "$ROOT/password" || fail 'password file'
+  [[ $CLI_PASS == 'literal-password-$()' ]] || fail 'password interpreted'
+  printf 'first\nsecond\n' > "$ROOT/password"
+  if parse_add_cli --protocol ss --password-file "$ROOT/password"; then fail 'multiline password'; fi
+  for args in '--protocol nope' '--protocol ss --port 65536' '--protocol ss --port 08' \
+    '--protocol ss --uuid invalid' '--protocol ss --sni example.com' \
+    '--protocol reality --multiplex' '--protocol reality --cert self' \
+    '--protocol ws --cert manual' '--protocol reality --port' \
+    '--protocol hy2 --method aes-128-gcm' '--protocol ss --unknown value'; do
+    if parse_add_cli $args; then fail "invalid arguments accepted: $args"; fi
+  done
+  parse_add_cli --protocol reality --flow none --multiplex || fail 'valid multiplex parameters'
+  SB_NON_INTERACTIVE=1
+  if ask 'must not prompt' default < /dev/null; then fail 'unattended prompt accepted'; fi
+) || exit 1
+
+(
+  cert=$(find "$ROOT/cli-ws/certs" -name fullchain.pem | head -n 1)
+  key=${cert%/*}/key.pem
+  cert_manual_validate "$cert" "$key" www.bing.com || fail 'manual certificate validation'
+  if cert_manual_validate "$cert" "$key" wrong.example; then fail 'wrong certificate hostname'; fi
+  other=$(find "$ROOT/cli-hy2/certs" -name key.pem | head -n 1)
+  if cert_manual_validate "$cert" "$other" www.bing.com; then fail 'mismatched private key'; fi
+) || exit 1
+
+# Relative certificate paths must survive the service's different working directory.
+(
+  cert=$(find "$ROOT/cli-ws/certs" -name fullchain.pem | head -n 1)
+  cd "${cert%/*}" || exit 1
+  parse_add_cli --protocol ws --cert manual --domain www.bing.com \
+    --cert-file fullchain.pem --key-file key.pem || fail 'relative certificate arguments'
+  [[ $CLI_CERT_FILE == /* && $CLI_KEY_FILE == /* ]] || fail 'relative certificate paths persisted'
+  cd / || exit 1
+  cert_manual_validate "$CLI_CERT_FILE" "$CLI_KEY_FILE" www.bing.com || fail 'certificate paths depend on working directory'
+) || exit 1

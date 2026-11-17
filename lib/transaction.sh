@@ -70,9 +70,14 @@ restore_snapshot() {
 # Dynamic scope keeps each node operation's snapshot and certificate state local.
 node_change() {
   local LAST_SNAP="" SNAPSHOT_RESTORED=0 NODE_CERT_CHANGED=0 NODE_FILES_CHANGED=0
-  local NODE_WAS_ACTIVE=0 NODE_SERVICE_RESTORED=0
+  local NODE_WAS_ACTIVE=0 NODE_SERVICE_RESTORED=0 NODE_CHANGE_COMMITTED=0 entry
+  local NODE_FW_ADDED=()
   svc is-active && NODE_WAS_ACTIVE=1
   if "$@"; then return 0; fi
+  ((NODE_CHANGE_COMMITTED == 0)) || return 1
+  for entry in ${NODE_FW_ADDED[@]+"${NODE_FW_ADDED[@]}"}; do
+    fw_remove_entry "$entry" || err "防火墙回滚失败，记录保留在 $SB_DIR/firewall.rules"
+  done
   if [[ -n $LAST_SNAP ]] && ((NODE_FILES_CHANGED || NODE_CERT_CHANGED)); then
     if [[ $SNAPSHOT_RESTORED != 1 ]]; then restore_snapshot || return 1; fi
     if ((NODE_SERVICE_RESTORED == 0)); then

@@ -8,12 +8,13 @@ usage() {
 sb v$SB_VERSION - sing-box 节点管理
 用法: sb [命令]
   (无)            打开交互菜单
-  add             新增节点
+  add [选项]      新增节点（参数模式见 sb add --help）
   list            列出节点
   info [编号]     查看节点链接/二维码/客户端配置
   edit [编号]     修改节点
   del [编号]      删除节点
   status          运行状态、证书到期时间
+  doctor          只读检查内核、配置、服务、监听及证书
   config          查看 sing-box 运行配置文件
   log [-f]        查看日志（-f 实时）
   start|stop|restart   服务控制

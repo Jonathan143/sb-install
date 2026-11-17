@@ -61,7 +61,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
     shift; "$@"
   }
   openssl() {
-    [[ $* == 's_client -connect test.example:443 -servername test.example -tls1_3 -alpn h2 -verify_hostname test.example -verify_return_error' ]] || return 99
+    [[ $* == 's_client -connect test.example:443 -servername test.example -tls1_3 -groups X25519 -alpn h2 -verify_hostname test.example -verify_return_error' ]] || return 99
     [[ $MODE == tls12 ]] && echo 'TLSv1.2' || echo 'New, TLSv1.3, Cipher is TLS_AES_256_GCM_SHA384'
     [[ $MODE == no-h2 ]] || echo 'ALPN protocol: h2'
     [[ $MODE == bad-cert ]] || echo 'Verify return code: 0 (ok)'
@@ -130,6 +130,7 @@ fi
 # A small cgroup must downgrade or stop before spawning probe workers.
 (
   sni_pid_budget() { SNI_PID_AVAILABLE=$available; }
+  sni_memory_budget() { SNI_MEMORY_AVAILABLE=""; }
   available=24; sni_limit_concurrency 4 || fail 'ample budget'
   [[ $SNI_EFFECTIVE_CONCURRENCY == 4 ]] || fail 'unnecessary downgrade'
   available=12; sni_limit_concurrency 4 || fail 'serial budget'
@@ -346,3 +347,27 @@ done
   [[ $N_SNI == original.example ]] || fail 'cancelled edit changed SNI'
 ) || exit 1
 echo 'PASS: SNI selection regression tests'
+
+# Both controller versions and parent limits constrain memory, even with spare PIDs.
+(
+  SNI_PROC_ROOT="$ROOT/proc" SNI_CGROUP_ROOT="$ROOT/cgroup"
+  mkdir -p "$SNI_PROC_ROOT/self" "$SNI_CGROUP_ROOT/child"
+  printf 'MemAvailable: 262144 kB\n' > "$SNI_PROC_ROOT/meminfo"
+  printf '0::/child\n' > "$SNI_PROC_ROOT/self/cgroup"
+  printf '%s\n' $((256 * 1024 * 1024)) > "$SNI_CGROUP_ROOT/child/memory.max"
+  printf '0\n' > "$SNI_CGROUP_ROOT/child/memory.current"
+  printf '%s\n' $((64 * 1024 * 1024)) > "$SNI_CGROUP_ROOT/memory.max"
+  printf '%s\n' $((16 * 1024 * 1024)) > "$SNI_CGROUP_ROOT/memory.current"
+  sni_limit_concurrency 4 || fail 'memory limited scan'
+  [[ $SNI_EFFECTIVE_CONCURRENCY == 1 ]] || fail 'parent memory limit ignored'
+  printf '%s\n' $((32 * 1024 * 1024)) > "$SNI_CGROUP_ROOT/memory.current"
+  if sni_limit_concurrency 4; then fail 'exhausted memory accepted'; fi
+  mkdir -p "$SNI_CGROUP_ROOT/memory/child" "$SNI_CGROUP_ROOT/pids/child"
+  printf '5:memory:/child\n6:pids:/child\n' > "$SNI_PROC_ROOT/self/cgroup"
+  printf '%s\n' $((80 * 1024 * 1024)) > "$SNI_CGROUP_ROOT/memory/child/memory.limit_in_bytes"
+  printf '0\n' > "$SNI_CGROUP_ROOT/memory/child/memory.usage_in_bytes"
+  printf '14\n' > "$SNI_CGROUP_ROOT/pids/child/pids.max"
+  printf '0\n' > "$SNI_CGROUP_ROOT/pids/child/pids.current"
+  sni_limit_concurrency 4 || fail 'v1 budgets'
+  [[ $SNI_EFFECTIVE_CONCURRENCY == 2 ]] || fail 'v1 limits ignored'
+) || exit 1
