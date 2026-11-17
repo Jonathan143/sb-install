@@ -42,7 +42,7 @@ STUB
 for arg do target=$arg; done
 "$BOOTSTRAP_TEST_CP" "$BOOTSTRAP_TEST_ROOT/standalone" "$target"
 STUB
-  chmod +x "$ROOT/minimal/"*
+  chmod +x "$ROOT/minimal/"{uname,id,apk,curl}
   for args in 'status' 'info 1' 'dns show' 'route show'; do
     if PATH="$ROOT/minimal" /bin/sh install.sh $args > "$ROOT/read-only-bootstrap" 2>&1; then
       echo 'FAIL: Bash-less read-only bootstrap succeeded' >&2; exit 1
