@@ -187,8 +187,17 @@ script_latest_preview() {
 update_script() {
   local tmp new expected='' original_url=$SCRIPT_URL
   local SCRIPT_URL=$SCRIPT_URL
+  local releases=https://github.com/Jonathan143/sb-install/releases stable_url
+  stable_url="$releases/latest/download/sb.sh"
   case ${1:-} in
-    ''|restart) ;;
+    ''|restart)
+      if [[ -z $SCRIPT_URL ]]; then
+        SCRIPT_URL="${GH_PROXY}${stable_url}"
+      elif [[ -z ${SB_SCRIPT_URL_OVERRIDE:-} && $SCRIPT_URL == *"$releases"/download/v*-*/sb.sh ]]; then
+        # Preview installs from an official tag used to save that fixed URL.
+        SCRIPT_URL="${SCRIPT_URL%/download/*}/latest/download/sb.sh"
+        original_url=$SCRIPT_URL
+      fi ;;
     --beta)
       expected=$(script_latest_preview) || return 1
       expected=${expected#v}
@@ -196,11 +205,10 @@ update_script() {
         info "当前 v${SB_VERSION}，最新测试版 v${expected}，无需更新"
         return 0
       fi
-      SCRIPT_URL="${GH_PROXY}https://github.com/Jonathan143/sb-install/releases/download/v${expected}/sb.sh"
+      SCRIPT_URL="${GH_PROXY}${releases}/download/v${expected}/sb.sh"
       ;;
     *) err '用法: sb update [--beta]'; return 1 ;;
   esac
-  [[ -n $SCRIPT_URL ]] || { err "未设置 SCRIPT_URL，无法在线更新。可用 SCRIPT_URL=<直链> sb update 指定一次"; return 1; }
   tmp=$(mktemp) || return 1
   curl -fsSL "$SCRIPT_URL" -o "$tmp" || { err "下载失败"; rm -f "$tmp"; return 1; }
   if ! validate_script_artifact "$tmp" || ! verify_script_checksum "$tmp"; then
@@ -209,6 +217,14 @@ update_script() {
   new=$(sed -n 's/^SB_VERSION="\(.*\)"/\1/p' "$tmp" | head -n1)
   if [[ -n $expected && $new != "$expected" ]]; then
     rm -f "$tmp"; err '下载脚本版本与测试版标签不一致，已取消更新'; return 1
+  fi
+  if [[ $SCRIPT_URL == *"$stable_url" ]]; then
+    if [[ $new == *-* ]]; then
+      rm -f "$tmp"; err '正式版更新地址返回了测试版，已取消更新'; return 1
+    fi
+    if [[ $SB_VERSION != *-* ]] && ! script_version_newer "$new" "$SB_VERSION"; then
+      rm -f "$tmp"; info "当前 v${SB_VERSION}，最新正式版 v${new}，无需更新"; return 0
+    fi
   fi
   info "当前 v${SB_VERSION}，远程 v${new:-?}"
   confirm "更新脚本?" y || { rm -f "$tmp"; return 0; }

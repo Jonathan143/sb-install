@@ -342,9 +342,11 @@ bash scripts/release.sh
 
 测试版本自动标记为 GitHub **Pre-release**，明确设置 `--latest=false`，不会替换稳定版 `releases/latest/download/sb.sh` 下载入口。
 
-使用 `sb update --beta` 自动查询本仓库最新测试版（包含 `alpha`、`beta`、`rc`，按版本号排序），确认后更新。当前版本相同或更高时不重复安装、不降级。该命令会校验发布文件和 SHA256，支持 `GH_PROXY` 加速文件下载；发布列表通过 GitHub API 查询。它不会更改已配置的 `SCRIPT_URL`，不带参数的 `sb update` 仍使用原更新地址。
+使用 `sb update --beta` 自动查询本仓库最新测试版（包含 `alpha`、`beta`、`rc`，按版本号排序），确认后更新。当前版本相同或更高时不重复安装、不降级。该命令会校验发布文件和 SHA256，支持 `GH_PROXY` 加速文件下载，发布列表通过 GitHub API 查询，已保存的 `SCRIPT_URL` 保持原值。
 
-尚不支持 `--beta` 的旧版本需要先指定已发布的新版本地址升级一次：`SCRIPT_URL=https://github.com/Jonathan143/sb-install/releases/download/vX.Y.Z-beta.N/sb.sh sb update`（替换为实际发布标签），之后即可使用 `sb update --beta`。固定标签地址不会自动跟随下一个测试版。
+不带参数的 `sb update` 默认获取最新正式版。旧安装若保存了本仓库的固定测试版地址，该命令会切换到正式版更新地址。自定义更新地址和固定正式版地址仍可使用。需要安装指定版本时，可在命令前显式传入 `SCRIPT_URL`。
+
+尚不支持 `--beta` 的旧版本需要先指定已发布的新版本地址升级一次，例如 `SCRIPT_URL=https://github.com/Jonathan143/sb-install/releases/download/vX.Y.Z-beta.N/sb.sh sb update`（替换为实际发布标签），之后即可使用 `sb update --beta`。
 
 发布前会同步远程标签、检查分支和版本、运行测试。确认后自动修改 `SB_VERSION`（如果需要）、提交版本变更、创建附注标签，并原子推送 `main` 和标签到 `origin`。本地已有但尚未推送的提交也会一并推送，确认前会显示列表。需要本地 Git 已配置提交身份，并拥有仓库推送权限。
 
@@ -371,7 +373,7 @@ SCRIPT_URL=https://github.com/Jonathan143/sb-install/releases/latest/download/sb
 curl -fsSL "$SCRIPT_URL" -o /usr/local/bin/sb && chmod +x /usr/local/bin/sb && SCRIPT_URL="$SCRIPT_URL" sb
 ```
 
-固定版本可使用 `https://github.com/Jonathan143/sb-install/releases/download/v1.0.1/sb.sh`（替换为实际已发布版本）；固定版本地址不会自动跟随最新版。仓库根目录的 `sb.sh` 现在是模块入口，不能单独下载运行。原先使用 `raw.../main/sb.sh` 的用户，请执行 `SCRIPT_URL=https://github.com/Jonathan143/sb-install/releases/latest/download/sb.sh sb update`，切换到独立发布脚本。
+固定正式版可使用 `https://github.com/Jonathan143/sb-install/releases/download/v1.0.1/sb.sh`（替换为实际已发布版本）。仓库根目录的 `sb.sh` 是模块入口，需要配套文件。旧安装若仍指向 `raw.../main/sb.sh` 或固定的测试版，可执行 `SCRIPT_URL=https://github.com/Jonathan143/sb-install/releases/latest/download/sb.sh sb update`，切换到正式版更新地址。
 
 ## 免责声明
 

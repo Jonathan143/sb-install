@@ -138,6 +138,76 @@ for scenario in valid mismatch missing duplicate; do
 done
 echo 'PASS: script artifact validation and release checksums'
 
+# Plain updates migrate saved official preview pins, while explicit URLs still work.
+for scenario in pinned proxied unset current newer wrong-channel explicit fixed cancel; do
+  (
+    releases=https://github.com/Jonathan143/sb-install/releases
+    stable_url="$releases/latest/download/sb.sh"
+    preview_url="$releases/download/v1.4.0-beta.3/sb.sh"
+    SB_VERSION=1.4.0-beta.3
+    SCRIPT_URL=$preview_url
+    SB_SCRIPT_URL_OVERRIDE=''
+    GH_PROXY=https://proxy.invalid/
+    SB_CMD="$ROOT/stable-command"
+    saved_url="$ROOT/stable-url-$scenario"
+    printf 'existing-command\n' > "$SB_CMD"
+    remote=1.4.3
+    expected_url=$stable_url
+    expected_saved=$stable_url
+    case $scenario in
+      proxied)
+        SCRIPT_URL="$GH_PROXY$preview_url"
+        expected_url="$GH_PROXY$stable_url"; expected_saved=$expected_url ;;
+      unset)
+        SCRIPT_URL=''
+        expected_url="$GH_PROXY$stable_url"; expected_saved='' ;;
+      current) SB_VERSION=1.4.3; SCRIPT_URL=$stable_url ;;
+      newer) SB_VERSION=1.5.0; SCRIPT_URL=$stable_url ;;
+      wrong-channel) remote=1.4.4-beta.1 ;;
+      explicit)
+        SB_SCRIPT_URL_OVERRIDE=$SCRIPT_URL
+        remote=1.4.0-beta.3
+        expected_url=$SCRIPT_URL; expected_saved=$SCRIPT_URL ;;
+      fixed)
+        SCRIPT_URL="$releases/download/v1.4.2/sb.sh"
+        remote=1.4.2
+        expected_url=$SCRIPT_URL; expected_saved=$SCRIPT_URL ;;
+    esac
+    sed "s/9.9.9/$remote/" "$ROOT/download" > "$ROOT/stable-download"
+    sum=$(openssl dgst -sha256 "$ROOT/stable-download"); sum=${sum##* }
+    curl() {
+      case $2 in
+        "$expected_url") cp "$ROOT/stable-download" "$4" ;;
+        "${expected_url%/*}/SHA256SUMS") printf '%s  sb.sh\n' "$sum" > "$4" ;;
+        *) fail "unexpected stable request $2" ;;
+      esac
+    }
+    confirm() {
+      case $scenario in
+        current|newer|wrong-channel) fail 'unexpected stable confirmation' ;;
+        cancel) return 1 ;;
+      esac
+      return 0
+    }
+    save_conf() { printf '%s\n' "$SCRIPT_URL" > "$saved_url"; }
+    result=0
+    update_script > "$ROOT/stable-output" 2>&1 || result=$?
+    case $scenario in
+      current|newer|cancel|wrong-channel)
+        [[ $(cat "$SB_CMD") == existing-command && ! -e $saved_url ]] || fail 'unexpected stable install or saved URL change'
+        if [[ $scenario == wrong-channel ]]; then
+          [[ $result != 0 ]] && grep -q '正式版更新地址返回了测试版' "$ROOT/stable-output" || fail 'accepted preview on stable URL'
+        else
+          [[ $result == 0 ]] || fail 'stable update no-op failed'
+        fi ;;
+      *)
+        [[ $result == 0 ]] && cmp "$ROOT/stable-download" "$SB_CMD" || fail 'stable install failed'
+        [[ -f $saved_url && $(cat "$saved_url") == "$expected_saved" ]] || fail 'wrong saved update URL' ;;
+    esac
+  ) || { cat "$ROOT/stable-output" >&2; fail "stable scenario $scenario"; }
+done
+echo 'PASS: stable update URL migration, explicit pin and channel validation'
+
 # Preview artifacts must pass the same structural checks as stable builds.
 for version in 9.9.9-alpha.1 9.9.9-beta.12 9.9.9-rc.1; do
   sed "s/9.9.9/$version/g" "$ROOT/download" > "$ROOT/preview"

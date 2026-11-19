@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Source module; loaded by sb.sh.
 main() {
-  local SB_NON_INTERACTIVE=0
+  local SB_NON_INTERACTIVE=0 SB_SCRIPT_URL_OVERRIDE=$SCRIPT_URL
   if [[ ${1:-} == add && $# -gt 1 ]]; then
     shift
     [[ ${1:-} != --help && ${1:-} != -h ]] || { add_usage; return 0; }
