@@ -109,6 +109,29 @@ route_write_json() {
   tmp=$(mktemp "${path}.XXXXXX") || return 1
   if ! printf '%s\n' "$data" > "$tmp" || ! chmod 600 "$tmp" || ! mv -f "$tmp" "$path"; then rm -f "$tmp"; return 1; fi
 }
+route_stage_rule_sets() {
+  local state=$1 stage=$2 sets tag path config
+  sets=$(jq -r '[.rules[] | select(.kind == "geoip" or .kind == "geosite") |
+    .kind as $kind | .values[] | $kind + "-" + .] | unique[]' <<<"$state") || return 1
+  [[ -n $sets ]] || return 0
+  while IFS= read -r tag; do
+    [[ $tag =~ ^(geoip|geosite)-[a-z0-9][a-z0-9_.@!-]{0,127}$ ]] || { err "无效的规则集类别：$tag"; return 1; }
+    [[ ! -s $META_DIR/rule-sets/$tag.srs ]] || continue
+    path="$stage/$tag.srs"
+    info "下载规则集 $tag"
+    if ! curl -fsSL --connect-timeout 10 --max-time 30 -o "$path" \
+      "${GH_PROXY:-}https://raw.githubusercontent.com/SagerNet/sing-${tag%%-*}/rule-set/$tag.srs"; then
+      err "无法下载规则集 $tag，请检查类别名称或下载网络"
+      return 1
+    fi
+    config=$(jq -cn --arg tag "$tag" --arg path "$path" '
+      {route:{rule_set:[{tag:$tag,type:"local",format:"binary",path:$path}]}}') || return 1
+    if ! "$SB_BIN" check -c /dev/stdin <<<"$config"; then
+      err "规则集 $tag 未通过当前 sing-box 内核校验"
+      return 1
+    fi
+  done <<<"$sets"
+}
 route_refresh() {
   [[ -f $META_DIR/routing.json ]] || return 0
   local state tags='[]' id config
@@ -124,44 +147,66 @@ route_refresh() {
     id=$(meta_load "$id" && printf '%s-%s' "$N_PROTO" "$N_ID") || return 1
     tags=$(jq --arg tag "$id" '. + [$tag]' <<<"$tags") || return 1
   done
-  config=$(jq -en --argjson state "$state" --argjson tags "$tags" '
+  config=$(jq -en --argjson state "$state" --argjson tags "$tags" --arg dir "$META_DIR/rule-sets" '
     def target: if . == "direct" then "sb-egress-direct" else . end;
+    def match_fields:
+      if .kind == "geoip" or .kind == "geosite" then
+        .kind as $kind | {rule_set:[.values[] | "sb-egress-" + $kind + "-" + .]}
+      else {(.kind):.values} end;
     {outbounds:([{type:"direct",tag:"sb-egress-direct",domain_resolver:"sb-egress-dns"}] +
       [$state.exits[] | .config + {tag:.id,domain_resolver:"sb-egress-dns"}]),
      dns:{servers:[{type:"local",tag:"sb-egress-dns"}]},
      route:{rules:(if ($tags | length) == 0 then [] else
        [{inbound:$tags,action:"sniff",timeout:"300ms"}] +
        (reduce ($state.rules[] | select(.enabled)) as $r ({rules:[],resolved:false};
-          if $r.kind == "ip_cidr" and (.resolved | not) then
+          if ($r.kind == "ip_cidr" or $r.kind == "geoip") and (.resolved | not) then
             .rules += [{inbound:$tags,action:"resolve",server:"sb-egress-dns"}] | .resolved=true else . end |
-          .rules += [{inbound:$tags,($r.kind):$r.values,action:"route",outbound:($r.outbound | target)}]) | .rules) +
-       [{inbound:$tags,action:"route",outbound:($state.default | target)}] end)}}') || return 1
+          .rules += [{inbound:$tags,action:"route",outbound:($r.outbound | target)} + ($r | match_fields)]) | .rules) +
+       [{inbound:$tags,action:"route",outbound:($state.default | target)}] end)}} |
+    ([.route.rules[].rule_set[]?] | unique) as $sets |
+    if ($sets | length) > 0 then
+      .route.rule_set = [$sets[] | {tag:.,type:"local",format:"binary",path:($dir + "/" + ltrimstr("sb-egress-") + ".srs")}]
+    else . end') || return 1
   route_write_json "$CONF_DIR/00-egress.json" "$config"
 }
-route_save() { node_change route_save_impl "$1"; }
+route_save() (
+  local stage
+  stage=$(mktemp -d "$SB_DIR/.egress.XXXXXX") || return 1
+  trap 'rm -rf "$stage"' EXIT
+  route_stage_rule_sets "$1" "$stage" || return 1
+  node_change route_save_impl "$1" "$stage"
+)
 route_save_impl() {
+  local state=$1 files=("$2"/*.srs)
   snapshot || return 1
   NODE_FILES_CHANGED=1
-  route_write_json "$META_DIR/routing.json" "$1" || return 1
+  if [[ -f ${files[0]} ]]; then
+    mkdir -p "$META_DIR/rule-sets" && mv -f "${files[@]}" "$META_DIR/rule-sets/" || return 1
+  fi
+  route_write_json "$META_DIR/routing.json" "$state" || return 1
   apply_config || return 1
   info "出口与分流配置已生效"
 }
 route_show() {
-  local state=${1:-$(route_load)}
-  jq -r '
+  local state=${1:-$(route_load)} indices=${2:-null}
+  jq -r --argjson indices "$indices" '
     . as $s |
     def exit_name($id): if $id == "direct" then "本机直连" else
       first($s.exits[] | select(.id == $id) | .name) // $id end;
-    "  默认出口：\(exit_name(.default))（未命中规则时使用）",
-    "  出口 \(.exits|length) 个  ·  规则 \(.rules|length) 条  ·  启用 \([.rules[]|select(.enabled)]|length) 条",
-    "", "出口列表（凭据隐藏）",
-    (if (.exits|length) == 0 then "  暂无出口，可选择 1 粘贴链接新增；本机直连始终可用"
-     else .exits | to_entries[] |
-       "  \(.key+1). \(.value.name)\(if .value.id == $s.default then " [默认]" else "" end)\n     \(.value.config.type) · \(.value.config.server | if contains(":") then "[" + . + "]" else . end):\(.value.config.server_port)" end),
-    "", "分流规则（从上到下，首条命中生效）",
-    (if (.rules|length) == 0 then "  暂无规则，所有流量使用默认出口"
-     else .rules | to_entries[] |
-       "  \(.key+1). [\(if .value.enabled then "启用" else "停用" end)] \(.value.kind | {domain:"精确域名",domain_suffix:"域名后缀",ip_cidr:"IP / CIDR"}[.] // .) · \(.value.values|join(", "))\n     → \(exit_name(.value.outbound))" end)' <<<"$state"
+    def show_rules:
+      .rules | to_entries[] |
+      select($indices == null or (.key as $i | $indices | index($i) != null)) |
+      "  \(.key+1). [\(if .value.enabled then "启用" else "停用" end)] \(.value.kind | {domain:"精确域名",domain_suffix:"域名后缀",ip_cidr:"IP / CIDR",geoip:"GeoIP",geosite:"Geosite"}[.] // .) · \(.value.values|join(", "))\n     → \(exit_name(.value.outbound))";
+    if $indices != null then show_rules else
+      "  默认出口：\(exit_name(.default))（未命中规则时使用）",
+      "  出口 \(.exits|length) 个  ·  规则 \(.rules|length) 条  ·  启用 \([.rules[]|select(.enabled)]|length) 条",
+      "", "出口列表（凭据隐藏）",
+      (if (.exits|length) == 0 then "  暂无出口，可选择 1 粘贴链接新增；本机直连始终可用"
+       else .exits | to_entries[] |
+         "  \(.key+1). \(.value.name)\(if .value.id == $s.default then " [默认]" else "" end)\n     \(.value.config.type) · \(.value.config.server | if contains(":") then "[" + . + "]" else . end):\(.value.config.server_port)" end),
+      "", "分流规则（从上到下，首条命中生效）",
+      (if (.rules|length) == 0 then "  暂无规则，所有流量使用默认出口" else show_rules end)
+    end' <<<"$state"
 }
 route_pick_exit() {
   local state=$1 mode=${2:-all} selected=${3:-} choices count choice default=''
@@ -198,27 +243,38 @@ route_import() {
 }
 route_edit_rule() {
   local state=$1 index=${2:--1} kind values outbound rule duplicate
+  local prompt='匹配值（英文逗号分隔，0/q 返回）'
   local kind_default=2 values_default='' outbound_default=direct enabled=true
   if ((index >= 0)); then
     rule=$(jq -c --argjson i "$index" '.rules[$i]' <<<"$state") || return 1
-    kind_default=$(jq -r '.kind | {domain:1,domain_suffix:2,ip_cidr:3}[.]' <<<"$rule")
+    kind_default=$(jq -r '.kind | {domain:1,domain_suffix:2,ip_cidr:3,geoip:4,geosite:5}[.]' <<<"$rule")
     values_default=$(jq -r '.values|join(", ")' <<<"$rule")
     outbound_default=$(jq -r '.outbound' <<<"$rule")
     enabled=$(jq -r '.enabled' <<<"$rule")
     info "编辑第 $((index + 1)) 条规则，回车保留原值"
   fi
   ui_item 1 '精确域名'; ui_item 2 '域名后缀（含根域及子域）'; ui_item 3 'IP / CIDR'
+  ui_item 4 'GeoIP（地区）'; ui_item 5 'Geosite（域名分类）'
   ui_item 0 '返回（也可输入 q）'
-  kind=$(ask_choice '匹配类型' 3 "$kind_default") || return 1
-  case $kind in 1) kind=domain ;; 2) kind=domain_suffix ;; 3) kind=ip_cidr ;; *) return 0 ;; esac
+  kind=$(ask_choice '匹配类型' 5 "$kind_default") || return 1
+  case $kind in
+    1) kind=domain ;;
+    2) kind=domain_suffix ;;
+    3) kind=ip_cidr ;;
+    4) kind=geoip; prompt='GeoIP 地区（如 cn,jp，英文逗号分隔，0/q 返回）' ;;
+    5) kind=geosite; prompt='Geosite 分类（如 google,github，英文逗号分隔，0/q 返回）' ;;
+    *) return 0 ;;
+  esac
   while true; do
-    values=$(ask_edit '匹配值（英文逗号分隔，0/q 返回）' "$values_default") || return 1
+    values=$(ask_edit "$prompt" "$values_default") || return 1
     values_default=$values
     case $values in 0|q|Q) return 0 ;; esac
     values=$(jq -en --arg s "$values" '$s | split(",") | map(gsub("^\\s+|\\s+$"; "")) | if length > 0 and all(.[]; length > 0 and (test("[[:space:][:cntrl:]]")|not)) then . else error("empty") end' 2>/dev/null) || { err '匹配值不能为空、包含空白或空项，请检查连续逗号及首尾逗号'; continue; }
     if [[ $kind == ip_cidr ]]; then
       values=$(jq -e 'map(if contains("/") then . elif contains(":") then . + "/128" else . + "/32" end) |
         if all(.[]; test("^[0-9a-fA-F:.]+/[0-9]{1,3}$")) then . else error("IP") end' <<<"$values" 2>/dev/null) || { err '请输入 IP 地址或 CIDR'; continue; }
+    elif [[ $kind == geoip || $kind == geosite ]]; then
+      values=$(jq -e 'map(ascii_downcase) | if all(.[]; test("^[a-z0-9][a-z0-9_.@!-]{0,127}$")) then . else empty end' <<<"$values" 2>/dev/null) || { err '请输入规则集类别名称，如 cn 或 google'; continue; }
     else
       values=$(jq -e 'map(ascii_downcase) | if all(.[]; test("^([a-z0-9_](?:[a-z0-9_-]*[a-z0-9_])?\\.)*[a-z0-9_](?:[a-z0-9_-]*[a-z0-9_])?$") and length <= 253) then . else error("domain") end' <<<"$values" 2>/dev/null) || { err '请输入域名，不含 URL、通配符或前导点'; continue; }
     fi
@@ -239,6 +295,29 @@ route_edit_rule() {
   fi
   rule=$(jq '.values |= unique' <<<"$rule") || return 1
   state=$(jq --argjson i "$index" --argjson rule "$rule" 'if $i < 0 then .rules += [$rule] else .rules[$i]=$rule end' <<<"$state") || return 1
+  route_save "$state"
+}
+route_delete_rules() {
+  local state=$1 count input indices
+  count=$(jq '.rules | length' <<<"$state") || return 1
+  ((count > 0)) || { info '暂无规则'; return 0; }
+  while true; do
+    input=$(ask '要删除的规则序号（英文逗号分隔，如 1,3,5，0/q 返回）') || return 1
+    case $input in 0|q|Q) return 0 ;; esac
+    if indices=$(jq -cen --arg input "$input" --argjson count "$count" '
+      $input | split(",") | map(gsub("^\\s+|\\s+$"; "")) |
+      if length > 0 and all(.[]; test("^[1-9][0-9]*$") and (tonumber <= $count)) then
+        map(tonumber - 1) | unique
+      else empty end' 2>/dev/null); then break; fi
+    warn "请输入 1–$count 范围内的规则序号，多个序号用英文逗号分隔"
+  done
+  if [[ $(jq 'length' <<<"$indices") -gt 1 ]]; then
+    ui_section '待删除规则'
+    route_show "$state" "$indices" || return 1
+    confirm '确认删除以上规则？' n || return 0
+  fi
+  state=$(jq --argjson indices "$indices" '
+    .rules |= (to_entries | map(select(.key as $i | $indices | index($i) == null) | .value))' <<<"$state") || return 1
   route_save "$state"
 }
 routing_menu() {
@@ -268,7 +347,7 @@ routing_menu() {
           state=$(jq --arg id "$id" '.exits |= map(select(.id != $id))' <<<"$state") && route_save "$state"
         fi ;;
       4) route_edit_rule "$state" ;;
-      5|6|7|8)
+      5|6|7)
         count=$(jq '.rules | length' <<<"$state")
         ((count > 0)) || { info '暂无规则'; continue; }
         index=$(ask_choice '规则序号（0 返回）' "$count") || continue
@@ -280,9 +359,9 @@ routing_menu() {
           7) dest=$(ask_choice '移动到第几条（0 返回）' "$count") || continue
              [[ $dest != 0 ]] || continue
              state=$(jq --argjson i "$index" --argjson d "$((dest - 1))" '.rules[$i] as $r | del(.rules[$i]) | .rules = (.rules[:$d] + [$r] + .rules[$d:])' <<<"$state") || continue ;;
-          8) state=$(jq --argjson i "$index" 'del(.rules[$i])' <<<"$state") || continue ;;
         esac
         route_save "$state" ;;
+      8) route_delete_rules "$state" ;;
       10) id=$(route_pick_exit "$state") || continue
           route_probe "$state" "$id"
           pause || return 0 ;;

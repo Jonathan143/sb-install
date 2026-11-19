@@ -14,7 +14,7 @@
   - sing-box 内置 ACME（HTTP-01 / TLS-ALPN-01，需要公网 80 或 443）
   - 手动指定证书文件（自动校验证书与私钥是否匹配、域名是否匹配）
   - 自签证书（无域名或测试用）
-- **出口与分流**：粘贴 VLESS / Shadowsocks 链接添加落地出口，按域名或 IP/CIDR 分流，支持规则排序、启停及出口连通性检测
+- **出口与分流**：粘贴 VLESS / Shadowsocks 链接添加落地出口，按域名、IP/CIDR、GeoIP 或 Geosite 分流，支持规则排序、启停、批量删除和出口连通性检测
 - **节点管理**：新增、查看、修改、删除；每个协议一个独立配置文件，互不影响
 - **安全变更**：修改前快照配置、节点元数据和托管证书；备份失败则取消操作。`sing-box check` 校验通过后才重启，重启和运行状态检查失败时回滚；恢复时先在临时目录解压验证，损坏快照不会删除现有配置
 - **输出**：分享链接、终端二维码（需 `qrencode`）、客户端 outbound JSON，并保存链接到 `/etc/sing-box/nodes.txt`；Shadowsocks 额外输出 Mihomo YAML。AnyTLS+Reality 仅输出客户端 JSON，链接文件中记录配置获取提示
@@ -124,10 +124,12 @@ curl -fsSL -o /usr/local/bin/sb ${GH_PROXY}https://github.com/Jonathan143/sb-ins
 运行 `sb route`，或主菜单选择 **10 → 出口与分流**：
 
 1. 选择「粘贴链接新增出口」，粘贴完整 `vless://...` 或 `ss://...` 链接（输入时明文显示），检查解析摘要并命名。
-2. 选择「新增规则」，填写精确域名、域名后缀或 IP/CIDR，多个值用英文逗号分隔，再按序号选择出口（`0` / `q` 返回）。
-3. 规则从上到下首条命中生效；可以编辑、启停、移动和删除。未命中默认本机直连，也可更改默认出口。
+2. 选择「新增规则」，填写精确域名、域名后缀、IP/CIDR、GeoIP 或 Geosite，多个值用英文逗号分隔，再按序号选择出口（`0` / `q` 返回）。
+3. 规则从上到下首条命中生效，可以编辑、启停、移动和删除。选择「删除规则」时，可输入单个序号或 `1,3,5`，批量删除会列出待删规则供确认。未命中默认本机直连，也可更改默认出口。
 
 例如 `example.com` 的域名后缀规则会同时匹配根域和子域；IP 支持 IPv4、IPv6 和 CIDR，单个地址自动转换成 `/32` 或 `/128`。不要填写 URL、`*.` 或前导点。规则作用于全部脚本管理的入口，新建入口自动纳入；不改变客户端分享链接。指定出口故障时连接失败，不自动回退直连。
+
+**GeoIP 与 Geosite**：新增和编辑时可填写 GeoIP 地区（如 `cn,jp`）或 Geosite 域名分类（如 `google,github`），命中任意一个值即匹配该规则。首次使用需从 SagerNet 下载对应的 `.srs`，已下载的规则集保存在 `meta/rule-sets/`，随快照备份并可重复使用。下载或校验失败时，本次变更取消。
 
 **链接支持范围**：VLESS 的 TCP、WebSocket、gRPC、HTTP 传输，以及无 TLS、TLS、Reality；识别 UUID、Flow、SNI、指纹、ALPN、公钥、short ID、路径、Host 和 serviceName。Flow 仅支持与 TCP + TLS/Reality 配合的 `xtls-rprx-vision`。Shadowsocks 支持 SIP002、URL-safe Base64 认证及旧式整段 Base64 链接，加密方式为 `aes-128-gcm`、`aes-256-gcm`、`chacha20-ietf-poly1305`，以及 SS2022 的 AES-128、AES-256、ChaCha20（单用户密钥）。暂不支持插件、XHTTP、TCP HTTP 伪装、SS2022 多用户密钥链和非默认 Reality spiderX。不支持的参数或组合会拒绝导入，不静默丢弃。
 
@@ -135,7 +137,7 @@ curl -fsSL -o /usr/local/bin/sb ${GH_PROXY}https://github.com/Jonathan143/sb-ins
 
 更新出口时重新粘贴链接即可，出口标识和规则引用保持不变。仍被规则（包括停用规则）或默认出口引用的出口不能删除。列表与解析摘要不展示密码、UUID 或完整链接；凭据保存在权限为 `600` 的 `meta/routing.json` 和 `conf.d/00-egress.json` 中，随现有快照备份/回滚。
 
-**DNS 与嗅探**：需要 sing-box **1.12.0+**。客户端传入域名时直接匹配；仅传入 IP 时尝试 TLS/HTTP/QUIC 嗅探（不改写目标），无法保证识别所有流量。遇到第一条启用的 IP 规则前，使用服务器的系统 DNS 解析域名，再按 IP 匹配；落地地址也使用系统 DNS。建议把域名规则排在 IP 规则前面。该功能不接管客户端 DNS，也不保证 DNS 请求经过落地。
+**DNS 与嗅探**：需要 sing-box **1.12.0+**。客户端传入域名时直接匹配；仅传入 IP 时尝试 TLS/HTTP/QUIC 嗅探（不改写目标），无法保证识别所有流量。遇到第一条启用的 IP/CIDR 或 GeoIP 规则前，使用服务器的系统 DNS 解析域名，再按 IP 匹配；落地地址也使用系统 DNS。建议把域名和 Geosite 规则排在 IP/CIDR 和 GeoIP 规则前面。该功能不接管客户端 DNS，也不保证 DNS 请求经过落地。
 
 共存模式下，若原 `config.json` 已有路由规则，会拒绝启用本功能，以免合并规则的优先级产生歧义；请先整合原有规则或采用接管配置。没有已有路由规则时，新规则仅匹配托管入口，并保留原全局默认路由。
 

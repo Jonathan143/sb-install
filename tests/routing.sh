@@ -129,6 +129,133 @@ example.org, sub.example.org
 INPUT
   jq -e '.default == "sb-egress-1" and (.exits|length) == 1 and (.rules|length) == 3 and .rules[0].kind == "ip_cidr" and .rules[1].enabled == false and .rules[2].values == ["example.org","sub.example.org"]' "$META_DIR/routing.json" >/dev/null || fail 'menu mutations'
 ) || fail 'menu workflow'
+(
+  META_DIR="$ROOT/batch-meta"; mkdir -p "$META_DIR"
+  batch=$(jq '.rules += [.rules[0], .rules[1]]' <<<"$state")
+  route_write_json "$META_DIR/routing.json" "$batch" || fail 'batch fixture'
+  need_core() { return 0; }
+  route_save() {
+    printf 'saved\n' >> "$ROOT/batch-saves"
+    route_write_json "$META_DIR/routing.json" "$1"
+  }
+  routing_menu <<'INPUT' > "$ROOT/batch.log" 2>&1
+8
+1,,3
+2,6
+1,no
+1,0
+1,2
+n
+8
+q
+8
+0
+8
+ 5, 1, 3, 1
+y
+0
+INPUT
+  [[ $(cat "$ROOT/batch-saves") == saved ]] || fail 'batch deletion saved more than once'
+  jq -e --argjson before "$batch" '.rules == [$before.rules[1],$before.rules[3]]' "$META_DIR/routing.json" >/dev/null || fail 'batch deleted wrong rules or changed order'
+  sed -n '/待删除规则/,/确认删除以上规则/p' "$ROOT/batch.log" | grep -q '5\. \[停用\] 精确域名' || fail 'missing batch preview'
+) || fail 'batch deletion workflow'
+(
+  META_DIR="$ROOT/geo-menu-meta"; mkdir -p "$META_DIR"
+  route_write_json "$META_DIR/routing.json" "$state" || fail 'Geo menu fixture'
+  need_core() { return 0; }
+  route_save() { route_write_json "$META_DIR/routing.json" "$1"; }
+  routing_menu <<'INPUT' > "$ROOT/geo-menu.log" 2>&1
+4
+4
+ CN, jp, cn
+2
+4
+5
+../bad
+Google, GitHub
+1
+5
+4
+
+US
+
+5
+2
+5
+geolocation-!CN, youtube@ads
+
+5
+5
+
+
+
+0
+INPUT
+  jq -e '.rules[3] == {kind:"geoip",values:["us"],outbound:"sb-egress-1",enabled:true} and
+    .rules[4] == {kind:"geosite",values:["github","google"],outbound:"direct",enabled:true} and
+    .rules[1] == {kind:"geosite",values:["geolocation-!cn","youtube@ads"],outbound:"direct",enabled:false}' "$META_DIR/routing.json" >/dev/null || fail 'Geo menu values, defaults or enabled state'
+  grep -q '请输入规则集类别名称' "$ROOT/geo-menu.log" || fail 'invalid Geo category not rejected'
+) || fail 'Geo menu workflow'
+(
+  # Use the real transaction with fake downloads and a core that rejects invalid SRS.
+  SB_DIR="$ROOT/geo-state"; META_DIR="$SB_DIR/meta"; CONF_DIR="$SB_DIR/conf.d"; BACKUP_DIR="$SB_DIR/backup"
+  GH_PROXY=''
+  mkdir -p "$META_DIR" "$CONF_DIR"
+  meta_reset; N_ID=1; N_PROTO=ss; meta_save || fail 'Geo node fixture'
+  SB_BIN="$ROOT/geo-core"
+  cat > "$SB_BIN" <<'CORE'
+#!/usr/bin/env bash
+[[ $* == 'check -c /dev/stdin' ]] || exit 1
+path=$(jq -er '.route.rule_set[0].path') || exit 1
+[[ $(cat "$path") == valid ]]
+CORE
+  chmod +x "$SB_BIN"
+  curl() {
+    while (($# > 2)); do shift; done
+    printf '%s\n' "$2" >> "$ROOT/geo-downloads"
+    case $2 in
+      */geosite-unknown.srs) return 22 ;;
+      */geosite-invalid.srs) printf 'invalid' > "$1" ;;
+      *) printf 'valid' > "$1" ;;
+    esac
+  }
+  apply_config() {
+    printf 'applied\n' >> "$ROOT/geo-applies"
+    route_refresh && [[ ${FORCE_APPLY_FAILURE:-0} == 0 ]]
+  }
+  geo_state=$(jq '.rules |= .[:1] + [
+    {kind:"geosite",values:["google","github"],outbound:"direct",enabled:true},
+    {kind:"geoip",values:["cn","jp"],outbound:"sb-egress-1",enabled:true},
+    {kind:"geosite",values:["github"],outbound:"direct",enabled:true},
+    {kind:"geosite",values:["disabled"],outbound:"direct",enabled:false}] + .[2:]' <<<"$state")
+  route_save "$geo_state" || fail 'Geo save'
+  generated="$CONF_DIR/00-egress.json"
+  jq -e --arg dir "$META_DIR/rule-sets" '.route | (.rules | map(.action)) == ["sniff","route","route","resolve","route","route","route","route"] and
+    .rules[2].rule_set == ["sb-egress-geosite-google","sb-egress-geosite-github"] and
+    .rules[4].rule_set == ["sb-egress-geoip-cn","sb-egress-geoip-jp"] and
+    .rules[4].outbound == "sb-egress-1" and (.rules[4] | has("geoip") | not) and
+    .rules[5].rule_set == ["sb-egress-geosite-github"] and
+    (.rule_set | map(.tag)) == ["sb-egress-geoip-cn","sb-egress-geoip-jp","sb-egress-geosite-github","sb-egress-geosite-google"] and
+    all(.rule_set[]; .type == "local" and .format == "binary" and .path == ($dir + "/" + (.tag|ltrimstr("sb-egress-")) + ".srs"))' "$generated" >/dev/null || fail 'Geo rule sets, order or paths'
+  grep -Fxq 'https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs' "$ROOT/geo-downloads" || fail 'GeoIP download URL'
+  grep -Fxq 'https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-github.srs' "$ROOT/geo-downloads" || fail 'Geosite download URL'
+  route_save "$geo_state" || fail 'Geo cached save'
+  [[ $(wc -l < "$ROOT/geo-downloads") -eq 5 ]] || fail 'duplicate or unnecessary Geo download'
+  cp "$generated" "$ROOT/geo-before"
+  for bad in unknown invalid; do
+    candidate=$(jq --arg bad "$bad" '.rules[1].values=["new",$bad]' <<<"$geo_state")
+    if route_save "$candidate" > "$ROOT/geo-error" 2>&1; then fail "accepted Geo category $bad"; fi
+    grep -q "geosite-$bad" "$ROOT/geo-error" || fail 'missing failed category'
+  done
+  [[ $(wc -l < "$ROOT/geo-applies") -eq 2 && ! -e $META_DIR/rule-sets/geosite-new.srs ]] || fail 'failed staging modified live files or applied configuration'
+  candidate=$(jq '.rules[1].values=["new"]' <<<"$geo_state")
+  if FORCE_APPLY_FAILURE=1 route_save "$candidate" >/dev/null 2>&1; then fail 'Geo apply failure accepted'; fi
+  [[ $(route_load) == "$geo_state" && ! -e $META_DIR/rule-sets/geosite-new.srs ]] || fail 'Geo state or cache not rolled back'
+  cmp "$ROOT/geo-before" "$generated" || fail 'Geo configuration not rolled back'
+  rm "$META_DIR/1.env"
+  route_refresh || fail 'Geo refresh without managed inbounds'
+  jq -e '.route == {rules:[]}' "$generated" >/dev/null || fail 'Geo rule leaked outside managed inbounds'
+) || fail 'Geo rule-set transaction workflow'
 # Exit selection uses numbers, supports cancellation, and excludes direct when managing.
 [[ $(route_pick_exit "$state" <<< 2) == sb-egress-1 ]] || fail 'numbered exit selection'
 [[ $(route_pick_exit "$state" managed <<< 1) == sb-egress-1 ]] || fail 'managed selection'

@@ -15,7 +15,7 @@ cleanup() {
 }
 trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; cat "$ROOT"/*.log >&2; exit 1; }
-mkdir -p "$CONF_DIR" "$META_DIR"
+mkdir -p "$CONF_DIR" "$META_DIR/rule-sets"
 port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'; }
 target_port=$(port); entry_port=$(port); exit_port=$(port)
 printf '%s' 'egress-ok' > "$ROOT/result"
@@ -33,9 +33,15 @@ start_entry() {
 request() {
   curl -fsS --noproxy '' --proxy "http://127.0.0.1:$entry_port" --max-time 3 "http://$1:$target_port/result" 2>/dev/null
 }
+for fixture in 'geoip-hit ip_cidr 127.0.0.1/32' 'geoip-miss ip_cidr 192.0.2.0/24' \
+  'geosite-hit domain localhost' 'geosite-miss domain invalid.example'; do
+  read -r name field value <<< "$fixture"
+  jq -n --arg field "$field" --arg value "$value" '{version:3,rules:[{($field):[$value]}]}' > "$ROOT/rule-set.json"
+  "$SB_BIN" rule-set compile --output "$META_DIR/rule-sets/$name.srs" "$ROOT/rule-set.json" || fail 'compile rule-set fixture'
+done
 uuid=12345678-1234-1234-1234-123456789abc
 for protocol in ss vless; do
-  for kind in domain domain_suffix ip_cidr; do
+  for kind in domain domain_suffix ip_cidr geoip geosite; do
     if [[ $protocol == ss ]]; then
       parsed=$(route_parse_link "ss://aes-128-gcm:pass@127.0.0.1:$exit_port") || fail 'SS import'
       inbound=$(jq -n --argjson port "$exit_port" '{type:"shadowsocks",tag:"landing",listen:"127.0.0.1",listen_port:$port,method:"aes-128-gcm",password:"pass"}')
@@ -45,20 +51,26 @@ for protocol in ss vless; do
     fi
     jq -n --argjson inbound "$inbound" '{inbounds:[$inbound],outbounds:[{type:"direct",tag:"direct"}]}' > "$ROOT/landing.json"
     "$SB_BIN" run -c "$ROOT/landing.json" > "$ROOT/landing.log" 2>&1 & exit_pid=$!
-    value=localhost; host=localhost
-    if [[ $kind == ip_cidr ]]; then value=127.0.0.1/32; host=127.0.0.1; fi
-    state=$(jq -n --argjson parsed "$parsed" --arg kind "$kind" --arg value "$value" '{next_id:2,default:"direct",exits:[{id:"sb-egress-1",name:"test",config:$parsed.config}],rules:[{kind:$kind,values:[$value],outbound:"sb-egress-1",enabled:true}]}')
+    host=localhost
+    case $kind in
+      ip_cidr) values='["127.0.0.1/32"]'; host=127.0.0.1 ;;
+      geoip) values='["miss","hit"]'; host=127.0.0.1 ;;
+      geosite) values='["miss","hit"]' ;;
+      *) values='["localhost"]' ;;
+    esac
+    state=$(jq -n --argjson parsed "$parsed" --arg kind "$kind" --argjson values "$values" '{next_id:2,default:"direct",exits:[{id:"sb-egress-1",name:"test",config:$parsed.config}],rules:[{kind:$kind,values:$values,outbound:"sb-egress-1",enabled:true}]}')
     route_write_json "$META_DIR/routing.json" "$state"
     start_entry
     [[ $(request "$host") == egress-ok ]] || fail "$protocol $kind forward"
-    if [[ $kind == ip_cidr ]]; then
+    if [[ $host == 127.0.0.1 ]]; then
       [[ $(request localhost) == egress-ok ]] || fail 'resolve domain before IP rule'
     fi
     # With a domain-only rule, numeric targets should use default direct.
     kill "$exit_pid"; wait "$exit_pid" 2>/dev/null; exit_pid=''
     if request "$host" > /dev/null; then fail "$protocol $kind leaked to direct"; fi
-    if [[ $kind == ip_cidr ]] && request localhost >/dev/null; then fail 'resolved IP rule leaked to direct'; fi
-    if [[ $kind != ip_cidr ]]; then
+    if [[ $host == 127.0.0.1 ]]; then
+      if request localhost >/dev/null; then fail 'resolved IP rule leaked to direct'; fi
+    else
       [[ $(request 127.0.0.1) == egress-ok ]] || fail 'unmatched default direct'
     fi
     route_write_json "$META_DIR/routing.json" "$(jq '.rules[0].enabled=false' <<<"$state")"
