@@ -239,8 +239,11 @@ CORE
     all(.rule_set[]; .type == "local" and .format == "binary" and .path == ($dir + "/" + (.tag|ltrimstr("sb-egress-")) + ".srs"))' "$generated" >/dev/null || fail 'Geo rule sets, order or paths'
   grep -Fxq 'https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs' "$ROOT/geo-downloads" || fail 'GeoIP download URL'
   grep -Fxq 'https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-github.srs' "$ROOT/geo-downloads" || fail 'Geosite download URL'
-  route_save "$geo_state" || fail 'Geo cached save'
-  [[ $(wc -l < "$ROOT/geo-downloads") -eq 5 ]] || fail 'duplicate or unnecessary Geo download'
+  rm "$META_DIR/rule-sets/geosite-github.srs"
+  route_save "$geo_state" > "$ROOT/geo-cache-log" 2>&1 || fail 'Geo partially cached save'
+  grep -Fq '下载规则集 geosite-github' "$ROOT/geo-cache-log" || fail 'missing Geosite download message'
+  grep -Fq '使用本地缓存规则集 geosite-google' "$ROOT/geo-cache-log" || fail 'missing Geosite cache message'
+  [[ $(wc -l < "$ROOT/geo-downloads") -eq 6 ]] || fail 'duplicate or unnecessary Geo download'
   cp "$generated" "$ROOT/geo-before"
   for bad in unknown invalid; do
     candidate=$(jq --arg bad "$bad" '.rules[1].values=["new",$bad]' <<<"$geo_state")
@@ -305,4 +308,59 @@ jq -e --argjson original "$state" '.rules == $original.rules' "$ROOT/edited" >/d
   if route_edit_rule "$state" <<< $'2\nbad,,value' > /dev/null 2>&1; then fail 'retry EOF accepted'; fi
   [[ ! -e $ROOT/retry-saved ]] || fail 'cancel/EOF saved a rule'
 ) || fail 'match input retry workflow'
+(
+  META_DIR="$ROOT/transfer-meta"; mkdir -p "$META_DIR"
+  need_core() { return 0; }
+  route_save() {
+    echo saved >> "$ROOT/transfer-saves"
+    route_write_json "$META_DIR/routing.json" "$1"
+  }
+  source_state=$(jq '.rules += [
+    {kind:"geoip",values:["cn"],outbound:"direct",enabled:true},
+    {kind:"geosite",values:["anthropic","openai"],outbound:"sb-egress-1",enabled:false}]' <<<"$state")
+  route_write_json "$META_DIR/routing.json" "$source_state"
+  file="$ROOT/transfer.json"
+  routing_menu <<< "$(printf '11\n5,2,1\n%s\n0' "$file")" > "$ROOT/transfer-log" 2>&1
+  jq -e '.format == "sb-install-routing-rules" and .version == 1 and
+    (.rules|map(.kind)) == ["domain_suffix","domain","geosite"] and
+    .rules[2].outbound == {ref:"sb-egress-1",name:"exit"} and
+    .rules[1].outbound.ref == "direct" and .rules[1].enabled == false' "$file" >/dev/null || fail 'selected export'
+  if grep -Eq 'server_port|password|next_id|default' "$file"; then fail 'export leaked exit configuration'; fi
+  route_export_rules "$source_state" <<< "$(printf '\n%s\ny' "$file")" >/dev/null 2>&1 || fail 'export all'
+  dest=$(jq '.exits[0].id="sb-egress-9" | .default="sb-egress-9" | .rules=[.rules[1]] | .rules[0].enabled=true' <<<"$state")
+  route_write_json "$META_DIR/routing.json" "$dest"
+  routing_menu <<< "$(printf '12\n%s\n\ny\n0' "$file")" > "$ROOT/transfer-log" 2>&1
+  expected=$(jq --argjson src "$source_state" '.rules += [$src.rules[0],$src.rules[2],$src.rules[3],$src.rules[4]] |
+    .rules |= map(if .outbound=="sb-egress-1" then .outbound="sb-egress-9" else . end)' <<<"$dest")
+  jq -e --argjson expected "$expected" '. == $expected' "$META_DIR/routing.json" >/dev/null || fail 'append lost rules, priority, mapping or local enabled state'
+  grep -q '追加 4 条，跳过重复规则 1 条' "$ROOT/transfer-log" || fail 'append preview counts'
+  route_import_rules "$expected" <<< "$(printf '%s\n1' "$file")" >/dev/null 2>&1 || fail 'repeat import'
+  [[ $(cat "$ROOT/transfer-saves") == saved ]] || fail 'no-op import saved'
+  # Ambiguous names require one choice for all three references.
+  ambiguous=$(jq '.exits += [.exits[0] + {id:"sb-egress-10"}]' <<<"$dest")
+  route_import_rules "$ambiguous" <<< "$(printf '%s\n3\n2\nn' "$file")" >/dev/null 2>&1 || fail 'cancel replacement'
+  [[ $(cat "$ROOT/transfer-saves") == saved ]] || fail 'cancelled import saved'
+  route_import_rules "$ambiguous" <<< "$(printf '%s\n3\n2\ny' "$file")" > "$ROOT/transfer-log" 2>&1 || fail 'replace ambiguous outlet'
+  jq -e --argjson src "$source_state" --argjson dest "$ambiguous" '
+    .rules == ($src.rules | map(if .outbound=="sb-egress-1" then .outbound="sb-egress-10" else . end)) and
+    del(.rules) == ($dest|del(.rules))' "$META_DIR/routing.json" >/dev/null || fail 'replace lost order, status or exit mapping'
+  grep -Fq 'exit [sb-egress-10]' "$ROOT/transfer-log" || fail 'ambiguous preview lacks local ID'
+  jq '.rules[2].values=["999.4.3.2/32"]' "$file" > "$ROOT/bad-rules"
+  if route_import_rules "$dest" <<< "$ROOT/bad-rules" > "$ROOT/transfer-log" 2>&1; then fail 'invalid CIDR accepted'; fi
+  grep -q '第 3 条规则' "$ROOT/transfer-log" || fail 'missing bad rule position'
+  jq '.rules[1].outbound={ref:"sb-egress-1",name:"other"}' "$file" > "$ROOT/bad-rules"
+  if route_import_rules "$dest" <<< "$ROOT/bad-rules" > "$ROOT/transfer-log" 2>&1; then fail 'conflicting outlet reference accepted'; fi
+  grep -q '第 2 条规则' "$ROOT/transfer-log" || fail 'missing conflicting reference position'
+  jq '.version=2' "$file" > "$ROOT/bad-rules"
+  if route_read_rules "$ROOT/bad-rules" >/dev/null 2>&1; then fail 'unsupported version accepted'; fi
+  [[ $(wc -l < "$ROOT/transfer-saves") -eq 2 ]] || fail 'partial import'
+  # A matching source ID alone must never select the local exit.
+  missing=$(jq '.exits[0].name="different"' <<<"$state")
+  jq '.rules=[.rules[0],(.rules[0] | .enabled=false)]' "$file" > "$ROOT/repeated-rules"
+  route_import_rules "$missing" <<< "$(printf '%s\n1\n1\ny' "$ROOT/repeated-rules")" > "$ROOT/transfer-log" 2>&1 || fail 'remap missing exit'
+  jq -e '.rules|length==4 and .[-1].outbound=="direct" and .[-1].enabled' "$META_DIR/routing.json" >/dev/null || fail 'duplicate within file or wrong local exit'
+  jq '.rules=[]' "$file" > "$ROOT/empty-rules"
+  route_import_rules "$dest" <<< "$(printf '%s\n2\ny' "$ROOT/empty-rules")" >/dev/null 2>&1 || fail 'replace with empty backup'
+  jq -e '.rules==[] and .default=="sb-egress-9"' "$META_DIR/routing.json" >/dev/null || fail 'empty restore'
+) || fail 'rule transfer workflow'
 echo 'PASS: egress URI parsing, scoped routing, snapshots and rollback'
