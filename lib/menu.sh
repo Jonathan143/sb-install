@@ -19,6 +19,7 @@ sb v$SB_VERSION - sing-box 节点管理
   log [-f]        查看日志（-f 实时）
   start|stop|restart   服务控制
   dns [show]      系统 DNS 配置 / 查看
+  bbr [show|enable]  BBR + fq 状态 / 一键开启
   route [show]    出口与分流 / 查看规则
   cert            证书管理
   core            安装/更新 sing-box 内核
@@ -63,10 +64,10 @@ main_menu() {
     ui_item 6 '运行状态'; ui_item 7 '查看运行配置'
     ui_item 8 '查看日志'; ui_item 9 '服务控制'
     ui_item 10 '出口与分流'; ui_item 11 '系统 DNS 配置'
-    ui_item 12 '证书管理'; ui_item 13 '更新内核 / 脚本'
-    ui_item 14 '卸载'
+    ui_item 12 '证书管理'; ui_item 13 'BBR + fq 拥塞控制'
+    ui_item 14 '更新内核 / 脚本'; ui_item 15 '卸载'
     printf '\n'; ui_item 0 '退出（也可输入 q）'
-    c=$(ask_choice "请选择" 14) || return 0
+    c=$(ask_choice "请选择" 15) || return 0
     ui_clear_screen
     # Explicit back actions set this flag in the current shell.
     UI_SKIP_PAUSE=0
@@ -83,8 +84,9 @@ main_menu() {
       10) routing_menu ;;
       11) system_dns_menu ;;
       12) cert_menu ;;
-      13) update_menu ;;
-      14) uninstall_all; [[ -x $SB_CMD ]] || return ;;
+      13) bbr_menu ;;
+      14) update_menu ;;
+      15) uninstall_all; [[ -x $SB_CMD ]] || return ;;
       0|q) return ;;
       *) warn "无效选择" ;;
     esac

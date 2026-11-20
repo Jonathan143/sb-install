@@ -105,19 +105,26 @@ curl -fsSL -o /usr/local/bin/sb ${GH_PROXY}https://github.com/Jonathan143/sb-ins
 | `sb log [-f]` | 查看日志，`-f` 实时跟踪 |
 | `sb start` / `stop` / `restart` | 服务控制（启动和重启前会先校验配置） |
 | `sb dns` / `sb dns show` | 修改 / 查看系统 DNS |
+| `sb bbr show` / `sb bbr enable` | 查看 TCP 拥塞控制和网卡队列 / 一键开启 BBR + fq（主菜单 13） |
 | `sb route` / `sb route show` | 出口与分流管理 / 查看规则（凭据隐藏） |
 | `sb cert` | 查看证书到期时间，强制续期 |
 | `sb core` | 安装或更新 sing-box 内核 |
 | `sb update` / `sb update --beta` | 更新 sb 脚本本身 |
 | `sb uninstall` | 卸载 |
 
-在主菜单选择「13 → 2」更新脚本成功后，按回车会直接重新运行新版 `sb`。使用 `sb update` 命令则在更新完成后退出。
+在主菜单选择「14 → 2」更新脚本成功后，按回车会直接重新运行新版 `sb`。使用 `sb update` 命令则在更新完成后退出。
 更新会检查文件非空、版本号、Bash 语法和独立脚本结构；Release 下载地址还必须通过同目录 `SHA256SUMS` 校验。下载、校验或安装失败会保留原命令。自定义下载地址需提供完整的独立构建产物。
 主菜单选择「7 · 查看运行配置」，或运行 `sb config`，按文件展示格式化的 JSON。接管模式显示 `conf.d/*.json`，共存模式还会显示 `config.json`。服务未运行时也可查看。显示的是磁盘当前内容，并非进程内存快照；手动修改后未重启的内容可能尚未生效。
 
 主菜单也会检查正在运行与磁盘安装的脚本版本；版本不一致时会显示两个版本，并提示按回车重新加载。已经运行的旧版脚本需先退出并重新运行一次，才能启用此检查。
 
 最新版更新与指定版本安装都先备份内核和配置，再校验配置、重启并确认服务运行；失败会恢复原内核和配置，并尝试恢复更新前的服务状态。内置 ACME 配置会随目标内核版本重新生成：1.14+ 使用 `tls.certificate_provider`，较旧版本保留 `tls.acme`，共存模式的旧 `config.json` 不会被改写。迁移格式见 [sing-box 官方迁移说明](https://sing-box.sagernet.org/migration/#migrate-inline-acme-to-certificate-provider)。
+
+## 系统 BBR + fq
+
+运行 `sb bbr show` 可查看当前 TCP 拥塞控制、内核列出的可用算法、非特权进程可选的算法、默认队列和各网卡实际队列。查看无需 root。有 `tc` 时会列出多队列网卡的子队列。
+
+以 root 运行 `sb bbr enable`，或在主菜单选择 **13 → 1**。脚本按 Linux 内核实际能力设置参数，可用于 Debian、Ubuntu、CentOS、AlmaLinux、Rocky Linux 和 Alpine。开启成功后，新的 TCP 连接默认使用 BBR，新建网卡队列默认使用 fq；已有连接及队列继续使用原配置。虚拟网卡可能显示 `noqueue`。启动配置保存在 `/etc/sysctl.d/99-sb-bbr.conf`，重启时由系统的 sysctl 服务读取。内核缺少相应功能或容器限制写入时，命令会报告失败。
 
 ## 出口与域名/IP 分流
 

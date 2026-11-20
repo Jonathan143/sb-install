@@ -31,6 +31,8 @@ main_menu < /dev/null > "$ROOT/menu" || fail "menu EOF"
 grep -q '节点 2' "$ROOT/menu" || fail 'menu node count'
 if LC_ALL=C grep -q $'\033' "$ROOT/menu"; then fail 'redirected output contains ANSI'; fi
 grep -q '节点管理' "$ROOT/menu" || fail 'missing sections'
+# Keep update and uninstall as the final two numbered actions.
+[[ $(awk '$1 ~ /^[1-9][0-9]*$/ {print $2}' "$ROOT/menu" | tail -2) == $'更新内核\n卸载' ]] || fail 'menu action order'
 # Exercise the main menu: a back action must not consume an extra Enter.
 # Stub pause because redirected CI input is not a terminal.
 (
@@ -44,7 +46,7 @@ grep -q '节点管理' "$ROOT/menu" || fail 'missing sections'
   snapshot() { fail 'back created snapshot'; }
   pause() { echo PAUSED >> "$ROOT/pauses"; }
   show_node() { echo SHOWN >> "$ROOT/shown"; }
-  for choice in 1 2 3 4 9 11 12 13; do
+  for choice in 1 2 3 4 9 11 12 14; do
     for back in 0 q Q; do
       main_menu <<< "$choice
 $back

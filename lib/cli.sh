@@ -22,11 +22,22 @@ main() {
     status|doctor|config|list|ls|info|log|logs)
       load_conf
       readonly_dispatch "$@"; return $? ;;
+    bbr)
+      if (($# > 2)); then err '用法: sb bbr [show|enable]'; return 1; fi
+      case ${2:-} in
+        show) bbr_show; return $? ;;
+        ""|enable) ;;
+        *) err '用法: sb bbr [show|enable]'; return 1 ;;
+      esac ;;
     dns) if [[ ${2:-} == show ]]; then system_dns_show; return $?; fi ;;
     route) if [[ ${2:-} == show ]]; then load_conf; readonly_require jq && route_show; return $?; fi ;;
   esac
   [[ $EUID -eq 0 ]] || die "请使用 root 用户运行"
   acquire_lock || return 1
+  if [[ ${1:-} == bbr ]]; then
+    if [[ ${2:-} == enable ]]; then bbr_enable; else bbr_menu; fi
+    return $?
+  fi
   if [[ ${1:-} == dns ]]; then
     case ${2:-} in
       "") system_dns_menu ;;
