@@ -111,6 +111,7 @@ service_menu() {
   ui_item 1 '启动'; ui_item 2 '停止'; ui_item 3 '重启'
   ui_item 4 '开启开机自启'; ui_item 5 '关闭开机自启'; ui_item 0 '返回'
   c=$(ask_choice "请选择" 5) || return 0
+  ui_clear_screen
   case $c in
     0) UI_SKIP_PAUSE=1 ;;
     1) svc_cmd start ;; 2) svc_cmd stop ;; 3) svc_cmd restart ;;

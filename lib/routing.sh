@@ -339,6 +339,8 @@ routing_menu() {
     ui_item 11 '导出分流规则'; ui_item 12 '导入分流规则'
     printf '\n'; ui_item 0 '返回（也可输入 q）'
     c=$(ask_choice '请选择' 12) || return 0
+    ui_clear_screen
+    case $c in 5|6|7|8|11) route_show "$state" true ;; esac
     case $c in
       0) UI_SKIP_PAUSE=1; return 0 ;;
       1) route_import "$state" ;;
@@ -369,7 +371,8 @@ routing_menu() {
       8) route_delete_rules "$state" ;;
       10) id=$(route_pick_exit "$state") || continue
           route_probe "$state" "$id"
-          pause || return 0 ;;
+          pause || return 0
+          ui_clear_screen ;;
       9) id=$(route_pick_exit "$state" all "$(jq -r .default <<<"$state")") || continue
          state=$(jq --arg id "$id" '.default=$id' <<<"$state") && route_save "$state" ;;
     esac

@@ -105,6 +105,7 @@ system_dns_menu() {
   ui_item 5 '恢复修改前的配置'
   ui_item 0 '返回'
   choice=$(ask_choice '请选择' 5) || return 0
+  ui_clear_screen
   case $choice in
     0) UI_SKIP_PAUSE=1; return 0 ;;
     1) servers=(1.1.1.1) ;;

@@ -19,6 +19,7 @@ cert_menu() {
   if [[ $c == 1 ]]; then
     if [[ -x $ACME_SH ]]; then
       dom=$(ask_domain "域名") || return 1
+      ui_clear_screen
       "$ACME_SH" --renew -d "$dom" --ecc --force && info "续期完成（证书已自动部署并重启服务）"
       rc=$?
     else
@@ -91,6 +92,7 @@ core_menu() {
   ui_title '内核管理'
   ui_item 1 '安装 / 更新最新版'; ui_item 2 '安装指定版本'; ui_item 3 '查看当前版本'; ui_item 0 '返回'
   c=$(ask_choice "请选择" 3) || return 0
+  ui_clear_screen
   case $c in
     1) update_core ;;
     2) version=$(ask "版本号（如 1.12.0）") || return 1

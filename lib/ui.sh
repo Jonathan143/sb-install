@@ -10,6 +10,10 @@ ui_colors() {
   return 0
 }
 ui_colors 1
+ui_clear_screen() {
+  [[ -t 0 && -t 1 && -t 2 && ${TERM:-dumb} != dumb ]] || return 0
+  printf '\033[2J\033[H'
+}
 info() { local RED GREEN YELLOW CYAN PLAIN BOLD DIM; ui_colors 2; printf '%s[信息]%s %s\n' "$GREEN" "$PLAIN" "$*" >&2; }
 warn() { local RED GREEN YELLOW CYAN PLAIN BOLD DIM; ui_colors 2; printf '%s[警告]%s %s\n' "$YELLOW" "$PLAIN" "$*" >&2; }
 err()  { printf '%s[错误]%s %s\n' "$RED" "$PLAIN" "$*" >&2; }
@@ -18,12 +22,16 @@ ui_title() { local RED GREEN YELLOW CYAN PLAIN BOLD DIM; ui_colors 1; printf '\n
 ui_section() { local RED GREEN YELLOW CYAN PLAIN BOLD DIM; ui_colors 1; printf '\n%s%s%s\n' "$BOLD" "$*" "$PLAIN"; }
 ui_item() { local RED GREEN YELLOW CYAN PLAIN BOLD DIM; ui_colors 1; printf '  %s%2s%s  %s\n' "$CYAN" "$1" "$PLAIN" "$2"; }
 ask() { local RED GREEN YELLOW CYAN PLAIN BOLD DIM; ui_colors 2;
-  local a
+  local a prompt=" › $1${2:+ [$2]}: "
   [[ ${SB_NON_INTERACTIVE:-0} != 1 ]] || { err "无交互操作缺少参数: $1"; return 1; }
-  printf '%s › %s%s: %s' "$CYAN" "$1" "${2:+ [$2]}" "$PLAIN" >&2
-  if [[ -t 0 ]]; then
-    IFS= read -r -e a || return 1
+  if [[ -t 0 && -t 2 ]]; then
+    # Readline must know the prompt width when it redraws an edited line.
+    if [[ -n $CYAN ]]; then
+      prompt=$'\001'"$CYAN"$'\002'"$prompt"$'\001'"$PLAIN"$'\002'
+    fi
+    IFS= read -r -e -p "$prompt" a || return 1
   else
+    printf '%s%s%s' "$CYAN" "$prompt" "$PLAIN" >&2
     IFS= read -r a || return 1
   fi
   printf '%s\n' "${a:-${2:-}}"

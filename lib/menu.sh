@@ -67,6 +67,7 @@ main_menu() {
     ui_item 14 '卸载'
     printf '\n'; ui_item 0 '退出（也可输入 q）'
     c=$(ask_choice "请选择" 14) || return 0
+    ui_clear_screen
     # Explicit back actions set this flag in the current shell.
     UI_SKIP_PAUSE=0
     case $c in
@@ -88,6 +89,7 @@ main_menu() {
       *) warn "无效选择" ;;
     esac
     [[ $UI_SKIP_PAUSE == 1 ]] || pause || return 0
+    ui_clear_screen
   done
 }
 
@@ -96,5 +98,6 @@ update_menu() {
   ui_title '更新管理'
   ui_item 1 '更新 sing-box 内核'; ui_item 2 '更新 sb 脚本'; ui_item 0 '返回'
   c=$(ask_choice "请选择" 2) || return 0
+  ui_clear_screen
   case $c in 1) update_core ;; 2) update_script restart ;; 0) UI_SKIP_PAUSE=1 ;; esac
 }
