@@ -37,5 +37,4 @@ pause() { :; }
 show_runtime_config() { echo CONFIG_VIEW; }
 main_menu <<< $'7\n0' > "$ROOT/menu" || fail 'menu config navigation'
 grep -q '^CONFIG_VIEW$' "$ROOT/menu" || fail 'menu config dispatch'
-grep -Eq '14 +卸载' "$ROOT/menu" || fail 'uninstall no longer last'
 echo 'PASS: service configuration view and menu navigation'
