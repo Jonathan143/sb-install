@@ -28,10 +28,79 @@ sb v$SB_VERSION - sing-box 节点管理
 EOF
 }
 
-main_menu() {
-  local RED GREEN YELLOW CYAN PLAIN BOLD DIM
+print_main_menu() {
+  local RED GREEN YELLOW CYAN PLAIN BOLD DIM st core_label node_count file
   ui_colors 1
-  local c st installed line core_label node_count file UI_SKIP_PAUSE=0
+  if svc is-active; then st="${GREEN}运行中${PLAIN}"; else st="${RED}未运行${PLAIN}"; fi
+  ui_title "sing-box 管理脚本 v$SB_VERSION"
+  core_label='未安装'
+  if [[ -x $SB_BIN ]]; then core_label='已安装（未检测版本）'
+  elif [[ -e $SB_BIN ]]; then core_label='文件不可执行'; fi
+  node_count=0
+  for file in "$META_DIR"/*.env; do
+    [[ -f $file ]] && node_count=$((node_count + 1))
+  done
+  printf '  服务 %s  ·  内核 %s  ·  节点 %s\n' "$st" "$core_label" "$node_count"
+  ui_section '节点管理'
+  ui_item 1 '新增节点'; ui_item 2 '查看节点 / 分享配置'
+  ui_item 3 '修改节点'; ui_item 4 '删除节点'
+  ui_item 5 'SNI 优选测试'
+  ui_section '运行与维护'
+  ui_item 6 '运行状态'; ui_item 7 '查看运行配置'
+  ui_item 8 '查看日志'; ui_item 9 '服务控制'
+  ui_item 10 '出口与分流'; ui_item 11 '系统 DNS 配置'
+  ui_item 12 '证书管理'; ui_item 13 'BBR + fq 拥塞控制'
+  ui_item 14 '更新内核 / 脚本'; ui_item 15 '卸载'
+  ui_item 0 '退出（也可输入 q）'
+}
+
+# Called in a command substitution. The alternate screen and its cleanup
+# belong only to the menu prompt, including EOF and interrupted reads.
+main_menu_choice() {
+  local rows cols
+  if [[ -t 0 && -t 2 && -t 3 && ${TERM:-dumb} != dumb ]]; then
+    trap 'printf "\033[?1049l" >&3' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap 'exit 129' HUP
+    printf '\033[?1049h\033[2J\033[H' >&3
+    # The full menu occupies 23 lines plus the prompt at normal widths.
+    if read -r rows cols < <(stty size) && ((rows > 0 && cols > 0 && (rows < 24 || cols < 54))); then
+      small_menu_choice "$rows" "$cols"
+      return
+    fi
+  fi
+  print_main_menu >&3
+  ask_choice "请选择" 15
+}
+
+# A short or narrow alternate screen has no native scrollback. Allow a
+# selection on every page, including numbers listed on another page.
+small_menu_choice() {
+  local rows=$1 cols=$2 line choice start=0 index used height
+  local lines=()
+  while IFS= read -r line; do lines+=("$line"); done < <(print_main_menu)
+  while true; do
+    printf '\033[2J\033[H' >&3
+    used=0
+    for ((index=start; index<${#lines[@]}; index++)); do
+      line=${lines[index]}
+      # Allow two cells per character for Chinese labels and one for empty lines.
+      height=$(( (2 * ${#line} + cols - 1) / cols ))
+      ((height > 0)) || height=1
+      ((index == start || used + height < rows - 1)) || break
+      printf '%s\n' "$line" >&3
+      used=$((used + height))
+    done
+    if ((start == 0 && index == ${#lines[@]})); then ask_choice '请选择' 15; return; fi
+    choice=$(ask_choice '请选择，回车翻页' 15 n) || return 1
+    if [[ $choice != n ]]; then printf '%s\n' "$choice"; return; fi
+    start=$((index % ${#lines[@]}))
+  done
+}
+
+main_menu() {
+  local c installed line UI_SKIP_PAUSE=0
   while true; do
     installed=""
     if [[ -r $SB_CMD ]]; then
@@ -46,28 +115,9 @@ main_menu() {
       info "当前运行 v${SB_VERSION}，磁盘已安装 v${installed}，需要重新加载脚本"
       restart_script
     fi
-    if svc is-active; then st="${GREEN}运行中${PLAIN}"; else st="${RED}未运行${PLAIN}"; fi
-    ui_title "sing-box 管理脚本 v$SB_VERSION"
-    core_label='未安装'
-    if [[ -x $SB_BIN ]]; then core_label='已安装（未检测版本）'
-    elif [[ -e $SB_BIN ]]; then core_label='文件不可执行'; fi
-    node_count=0
-    for file in "$META_DIR"/*.env; do
-      [[ -f $file ]] && node_count=$((node_count + 1))
-    done
-    printf '  服务 %s  ·  内核 %s  ·  节点 %s\n' "$st" "$core_label" "$node_count"
-    ui_section '节点管理'
-    ui_item 1 '新增节点'; ui_item 2 '查看节点 / 分享配置'
-    ui_item 3 '修改节点'; ui_item 4 '删除节点'
-    ui_item 5 'SNI 优选测试'
-    ui_section '运行与维护'
-    ui_item 6 '运行状态'; ui_item 7 '查看运行配置'
-    ui_item 8 '查看日志'; ui_item 9 '服务控制'
-    ui_item 10 '出口与分流'; ui_item 11 '系统 DNS 配置'
-    ui_item 12 '证书管理'; ui_item 13 'BBR + fq 拥塞控制'
-    ui_item 14 '更新内核 / 脚本'; ui_item 15 '卸载'
-    printf '\n'; ui_item 0 '退出（也可输入 q）'
-    c=$(ask_choice "请选择" 15) || return 0
+    # Keep the selected number on stdout and draw on the original output.
+    { c=$(main_menu_choice); } 3>&1 || return 0
+    [[ $c != 0 ]] || return 0
     ui_clear_screen
     # Explicit back actions set this flag in the current shell.
     UI_SKIP_PAUSE=0
@@ -87,7 +137,6 @@ main_menu() {
       13) bbr_menu ;;
       14) update_menu ;;
       15) uninstall_all; [[ -x $SB_CMD ]] || return ;;
-      0|q) return ;;
       *) warn "无效选择" ;;
     esac
     [[ $UI_SKIP_PAUSE == 1 ]] || pause || return 0

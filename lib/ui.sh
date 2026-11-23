@@ -73,7 +73,10 @@ ask_choice() {
   local value max=$2
   while true; do
     value=$(ask "$1" "${3:-}") || return 1
-    case $value in 0|q|Q) printf '0\n'; return 0 ;; esac
+    case $value in
+      0|q|Q) printf '0\n'; return 0 ;;
+      n|N) if [[ ${3:-} == n ]]; then printf 'n\n'; return 0; fi ;;
+    esac
     if [[ $value =~ ^[1-9][0-9]?$ ]] && ((value <= max)); then
       printf '%s\n' "$value"; return 0
     fi

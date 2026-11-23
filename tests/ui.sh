@@ -31,6 +31,10 @@ main_menu < /dev/null > "$ROOT/menu" || fail "menu EOF"
 grep -q '节点 2' "$ROOT/menu" || fail 'menu node count'
 if LC_ALL=C grep -q $'\033' "$ROOT/menu"; then fail 'redirected output contains ANSI'; fi
 grep -q '节点管理' "$ROOT/menu" || fail 'missing sections'
+# Page through a short menu and choose an action without an extra Enter.
+[[ $(small_menu_choice 12 80 3>"$ROOT/small-menu" <<< $'\n8') == 8 ]] || fail 'small menu selection'
+grep -q '运行与维护' "$ROOT/small-menu" || fail 'small menu did not advance'
+[[ $(small_menu_choice 12 80 3>/dev/null <<< q) == 0 ]] || fail 'small menu exit'
 # Keep update and uninstall as the final two numbered actions.
 [[ $(awk '$1 ~ /^[1-9][0-9]*$/ {print $2}' "$ROOT/menu" | tail -2) == $'更新内核\n卸载' ]] || fail 'menu action order'
 # Exercise the main menu: a back action must not consume an extra Enter.
