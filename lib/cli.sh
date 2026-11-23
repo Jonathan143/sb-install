@@ -50,7 +50,6 @@ main() {
   case ${1:-} in
     # Opening the menu must not launch another Go runtime or rewrite services.
     "") if [[ ! -e $SB_BIN ]]; then need_core; fi
-        ui_enter_fullscreen
         main_menu ;;
     add) if ((SB_NON_INTERACTIVE)); then add_node_cli; else add_node; fi ;;
     list|ls) list_nodes ;;

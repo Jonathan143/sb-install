@@ -116,6 +116,8 @@ curl -fsSL -o /usr/local/bin/sb ${GH_PROXY}https://github.com/Jonathan143/sb-ins
 更新会检查文件非空、版本号、Bash 语法和独立脚本结构；Release 下载地址还必须通过同目录 `SHA256SUMS` 校验。下载、校验或安装失败会保留原命令。自定义下载地址需提供完整的独立构建产物。
 主菜单选择「7 · 查看运行配置」，或运行 `sb config`，按文件展示格式化的 JSON。接管模式显示 `conf.d/*.json`，共存模式还会显示 `config.json`。服务未运行时也可查看。显示的是磁盘当前内容，并非进程内存快照；手动修改后未重启的内容可能尚未生效。
 
+配置、日志或节点列表超过一屏时，可用终端滚动条向上回看。配置超过终端历史行数上限时，可运行 `sb config | less` 分页查看，按 `q` 退出。
+
 主菜单也会检查正在运行与磁盘安装的脚本版本；版本不一致时会显示两个版本，并提示按回车重新加载。已经运行的旧版脚本需先退出并重新运行一次，才能启用此检查。
 
 最新版更新与指定版本安装都先备份内核和配置，再校验配置、重启并确认服务运行；失败会恢复原内核和配置，并尝试恢复更新前的服务状态。内置 ACME 配置会随目标内核版本重新生成：1.14+ 使用 `tls.certificate_provider`，较旧版本保留 `tls.acme`，共存模式的旧 `config.json` 不会被改写。迁移格式见 [sing-box 官方迁移说明](https://sing-box.sagernet.org/migration/#migrate-inline-acme-to-certificate-provider)。

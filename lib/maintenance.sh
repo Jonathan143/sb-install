@@ -107,7 +107,6 @@ restart_script() {
   read -erp "按回车重新运行 sb..." reply || exit 0
   # Release the old process's lock before the new script acquires its own.
   exec 9>&-
-  ui_leave_fullscreen
   exec bash "$SB_CMD"
   err "重新运行失败，请手动运行 sb"
   exit 1

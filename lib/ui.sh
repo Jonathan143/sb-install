@@ -10,25 +10,9 @@ ui_colors() {
   return 0
 }
 ui_colors 1
-ui_interactive_screen() { [[ -t 0 && -t 1 && -t 2 && ${TERM:-dumb} != dumb ]]; }
-UI_FULLSCREEN=0
-ui_leave_fullscreen() {
-  [[ $UI_FULLSCREEN == 1 ]] || return 0
-  printf '\033[?1049l'
-  UI_FULLSCREEN=0
-}
-ui_enter_fullscreen() {
-  ui_interactive_screen || return 0
-  trap ui_leave_fullscreen EXIT
-  trap 'exit 130' INT
-  trap 'exit 143' TERM
-  trap 'exit 129' HUP
-  UI_FULLSCREEN=1
-  printf '\033[?1049h'
-  ui_clear_screen
-}
 ui_clear_screen() {
-  ui_interactive_screen || return 0
+  # Stay on the primary screen so overflow goes into terminal scrollback.
+  [[ -t 0 && -t 1 && -t 2 && ${TERM:-dumb} != dumb ]] || return 0
   printf '\033[2J\033[H'
 }
 info() { local RED GREEN YELLOW CYAN PLAIN BOLD DIM; ui_colors 2; printf '%s[信息]%s %s\n' "$GREEN" "$PLAIN" "$*" >&2; }
